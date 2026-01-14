@@ -124,4 +124,6 @@ pip install -e .
 - **Plots**: Generated corner plots and figures are saved to `plots/`
   - Comparison of different parameter estimation methods: derivative approximation, Fisher matrix, and HMC (see `plots/` directory for all comparison plots)
   
-  ![Lens Mass Parameters](plots/comparison_fisher_DL12_EM_GW_lens_mass.jpg) 
+  <!--![Lens Mass Parameters](plots/comparison_fisher_DL12_EM_GW_lens_mass.jpg) -->
+  ![Lens Mass Parameters](plots/lens_mass_posterior_comparison.pdf) 
+
