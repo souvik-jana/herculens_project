@@ -13,6 +13,7 @@ from .data_sim import (
     simulate_gw,
     compute_gw_from_images
 )
+# from .prob_model_PL import ProbModel, ProbModelSourcePlane, ProbModelFisher, ProbModel_EM_GW
 from .prob_model import ProbModel, ProbModelSourcePlane, ProbModelFisher
 from .inference import run_mcmc
 from .fisher import compute_fisher

@@ -45,7 +45,7 @@ def setup_jax(ncpus=None, enable_x64=True, platform='auto', verbose=True):
     # Determine platform without initializing JAX backends
     # For 'auto', we'll default to 'cpu' and let JAX detect later
     if platform == 'auto':
-            platform = 'cpu'
+        platform = 'cpu'
     
     os.environ['JAX_PLATFORM_NAME'] = platform
     
@@ -80,7 +80,7 @@ def setup_jax(ncpus=None, enable_x64=True, platform='auto', verbose=True):
     # even if we can't update this config
     if platform in ['cpu', 'auto']:
         try:
-        jax.config.update('jax_num_cpu_devices', ncpus)
+            jax.config.update('jax_num_cpu_devices', ncpus)
         except (RuntimeError, AttributeError):
             # Silently fail - XLA_FLAGS environment variable is already set,
             # so the configuration will still work

@@ -58,19 +58,19 @@ lens_reconstruction/
     └── [corner plots and figures]
 ```
 
+## ⚠️ Important Setup Requirement
+
+**REQUIRED SOURCE CODE MODIFICATION**: Before using this package, you **must** modify the `herculens` source code for JAX compatibility:
+
+1. Edit `herculens/MassModel/mass_model.py` at **line 125**
+2. Change `potential = np.zeros_like(x)` to `potential = jnp.zeros_like(x)`
+3. Ensure `import jax.numpy as jnp` is present at the top of the file
+
+See the [Installation](#installation) section below for detailed instructions.
+
 ## Quick Start
 
 > **⚠️ Work in Progress**: This package is currently under active development and is not yet ready for general use. The API may change and features may be incomplete.
-
-### Using the Package
-
-```python
-from gwemfish import setup_jax, setup_lens, simulate_em, simulate_gw, ProbModel, run_mcmc
-
-# Setup and run inference
-setup_jax(ncpus=8, enable_x64=True, platform='cpu')
-# ... see examples/ for complete usage
-```
 
 ### Examples
 
@@ -83,24 +83,72 @@ Development notebooks in `notebooks/` are work-in-progress and not intended for 
 
 ## Dependencies
 
+This project uses [`uv`](https://github.com/astral-sh/uv) for dependency management. All dependencies are specified in `pyproject.toml` and locked in `uv.lock`.
+
+Key dependencies:
 - `jax` / `jaxlib` - Numerical computing
 - `numpyro` - Probabilistic programming framework
-- `herculens` - Gravitational lensing library
+- `herculens` - Gravitational lensing library (⚠️ requires source code modification - see Installation)
 - `jaxtronomy` - JAX-based astronomy tools
 - `matplotlib` - Plotting library
 - `corner` - Corner plot visualization
 - `numpy`, `scipy` - Scientific computing
 
+See `pyproject.toml` for the complete list of dependencies.
+
 ## Installation
 
-```bash
-# Install core dependencies
-pip install jax jaxlib numpyro herculens matplotlib numpy scipy corner
+### Using `uv` (Recommended)
 
-# Install gwemfish package (development mode)
+This project uses [`uv`](https://github.com/astral-sh/uv) for fast and reliable dependency management.
+
+```bash
+# Install uv if you haven't already
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Navigate to project directory
 cd /path/to/lens_reconstruction
-pip install -e .
+
+# Sync dependencies (installs all packages from pyproject.toml)
+uv sync
+
+# Activate the virtual environment
+source .venv/bin/activate  # On macOS/Linux
+# or
+.venv\Scripts\activate  # On Windows
 ```
+
+**Note**: Package installation (`gwemfish`) is coming soon and currently under development. For now, add the project root to your Python path in your scripts/notebooks (see examples for reference).
+
+**Syncing dependencies**: Run `uv sync` whenever dependencies change or after pulling updates. This ensures your environment matches the `uv.lock` file.
+
+### ⚠️ Required Source Code Modification
+
+**IMPORTANT**: The `herculens` package requires a source code modification for JAX compatibility:
+
+1. Locate the herculens installation in your virtual environment:
+   ```bash
+   # Find the path (usually in .venv/lib/python3.13/site-packages/herculens/)
+   python -c "import herculens; print(herculens.__file__)"
+   ```
+
+2. Edit the file: `herculens/MassModel/mass_model.py` at **line 125**
+
+3. Change:
+   ```python
+   potential = np.zeros_like(x)
+   ```
+   to:
+   ```python
+   potential = jnp.zeros_like(x)
+   ```
+
+4. Make sure to import JAX at the top of the file if not already present:
+   ```python
+   import jax.numpy as jnp
+   ```
+
+After modifying the source code, you may need to restart your Python kernel or reload the module.
 
 ## Features
 
