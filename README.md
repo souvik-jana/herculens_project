@@ -128,14 +128,7 @@ source .venv/bin/activate  # On macOS/Linux
 
 2. Edit the file: `herculens/MassModel/mass_model.py` at **line 125**
 
-3. Change:
-   ```python
-   potential = np.zeros_like(x)
-   ```
-   to:
-   ```python
-   potential = jnp.zeros_like(x)
-   ```
+3. Change `potential = np.zeros_like(x)` to `potential = jnp.zeros_like(x)`
 
 4. Make sure to import JAX at the top of the file if not already present:
    ```python
