@@ -60,13 +60,7 @@ lens_reconstruction/
 
 ## ⚠️ Important Setup Requirement
 
-**REQUIRED SOURCE CODE MODIFICATION**: Before using this package, you **must** modify the `herculens` source code for JAX compatibility:
-
-1. Edit `herculens/MassModel/mass_model.py` at **line 125**
-2. Change `potential = np.zeros_like(x)` to `potential = jnp.zeros_like(x)`
-3. Ensure `import jax.numpy as jnp` is present at the top of the file
-
-See the [Installation](#installation) section below for detailed instructions.
+**REQUIRED**: The `herculens` package requires a source code modification for JAX compatibility. See the [Installation](#installation) section below for detailed instructions.
 
 ## Quick Start
 
