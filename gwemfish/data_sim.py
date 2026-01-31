@@ -156,7 +156,7 @@ def simulate_em(kwargs_lens, kwargs_source, kwargs_lens_light,
     lens_image = hcl.LensImage(
         deepcopy(pixel_grid), 
         deepcopy(psf), 
-        noise_class=noise_inference,
+        noise_class=deepcopy(noise_inference),
         lens_mass_model_class=deepcopy(lens_mass_model),
         source_model_class=deepcopy(source_model_class),
         lens_light_model_class=deepcopy(lens_light_model_class),

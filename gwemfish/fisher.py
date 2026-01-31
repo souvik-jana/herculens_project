@@ -61,6 +61,8 @@ def compute_fisher(model, input_params, keys_to_include, u0, rng_key=None):
         dx = u - u0
         taylor1 = logp0 + g0 @ dx
         taylor2 = taylor1 + 0.5 * dx @ H0 @ dx
+        #taylor3 = taylor2 + (1.0 / 6.0) * jnp.einsum("ijk,i,j,k", F0, dx, dx, dx)
+        #taylor4 = taylor3 + (1.0 / 24.0) * jnp.einsum("ijkl,i,j,k,l", Q0, dx, dx, dx, dx)
         return taylor2
     
     return approx_logp, logp0, g0, H0
