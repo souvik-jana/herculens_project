@@ -1,0 +1,14 @@
+schema: '2.0'
+stages:
+  my_first_dvc:
+    cmd: uv run em_gw_pe_mcmc_hmc.py
+    deps:
+    - path: em_gw_pe_mcmc_hmc.py
+      hash: md5
+      md5: 1c04033ee7beca4172f61224ac406340
+      size: 109912
+    outs:
+    - path: ../data/inference_results_PE_EM.pkl
+      hash: md5
+      md5: ca47e93fb0347a77b9b59387dbf41ef6
+      size: 20373044
