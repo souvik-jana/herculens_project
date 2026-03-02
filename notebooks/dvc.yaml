@@ -1,0 +1,7 @@
+stages:
+  my_first_dvc:
+    cmd: uv run em_gw_pe_mcmc_hmc.py
+    deps:
+    - em_gw_pe_mcmc_hmc.py
+    outs:
+    - ../data/inference_results_PE_EM.pkl
