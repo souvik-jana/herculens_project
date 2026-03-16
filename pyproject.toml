@@ -29,6 +29,7 @@ dependencies = [
     "utax @ git+https://github.com/aymgal/utax.git",
     "helens @ git+https://github.com/Herculens/helens",
     "arviz",
+    "ipython>=9.9.0",
 ]
 
 [build-system]
