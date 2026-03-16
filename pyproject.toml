@@ -1,33 +1,39 @@
 [project]
-name = "lens-reconstruction"
+name = "gwemfish"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "arviz>=0.23.1",
-    "astropy>=7.2.0",
-    "blackjax-nightly>=1.1.1.post7",
-    "corner>=2.2.3",
-    "dvc-ssh>=4.2.2",
+    "arviz",
+    "astropy",
+    "blackjax-nightly",
+    "corner",
+    "dvc-ssh",
     "helens",
     "herculens",
-    "ipykernel>=7.1.0",
-    "jaxtronomy>=0.1.1",
-    "jupyter>=1.1.1",
-    "ler>=0.3.0",
-    "matplotlib==3.10.6",
-    "nbconvert>=7.16.6",
-    "nifty8>=8.5.7",
-    "numpy==2.3.3",
-    "numpyro>=0.19.0",
-    "optax>=0.2.6",
-    "scienceplots>=2.2.0",
-    "scipy==1.16.2",
+    "ipykernel",
+    "jaxtronomy",
+    "jupyter",
+    "ler",
+    "matplotlib",
+    "nbconvert",
+    "nifty8",
+    "numpy",
+    "numpyro",
+    "optax",
+    "scienceplots",
+    "scipy",
     "utax",
+    "herculens @ git+https://github.com/austinpeel/herculens.git",
+    "utax @ git+https://github.com/aymgal/utax.git",
+    "helens @ git+https://github.com/Herculens/helens",
+    "arviz",
 ]
 
-[tool.uv.sources]
-herculens = { git = "https://github.com/austinpeel/herculens.git" }
-utax = { git = "https://github.com/aymgal/utax.git" }
-helens = { git = "https://github.com/Herculens/helens" }
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
