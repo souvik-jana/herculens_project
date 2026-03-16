@@ -12,3 +12,67 @@ stages:
       hash: md5
       md5: ca47e93fb0347a77b9b59387dbf41ef6
       size: 20373044
+    - path: corner_PE_EM_GW_GW image_positions.pdf
+      hash: md5
+      md5: 04fe3dfe202a1f9decca45f21be37f08
+      size: 13499439
+    - path: corner_PE_EM_GW_cosmology_params.pdf
+      hash: md5
+      md5: fbc818f2a915988b5ca307242b0f5b15
+      size: 548159
+    - path: corner_PE_EM_GW_lens_light.pdf
+      hash: md5
+      md5: eb85f6834c0932d08cb80e1934fc6d5c
+      size: 7291100
+    - path: corner_PE_EM_GW_lens_mass.pdf
+      hash: md5
+      md5: 63e1812bccbe130efaadc24fe6b59ee8
+      size: 4810719
+    - path: corner_PE_EM_GW_noise_params.pdf
+      hash: md5
+      md5: ebe59f3b80360819c74dc4f8e254abee
+      size: 14315
+    - path: corner_PE_EM_GW_source_light.pdf
+      hash: md5
+      md5: 385699bf241256ff6581106672275655
+      size: 2943746
+    - path: corner_fisher_EM_GW_GW image_positions.pdf
+      hash: md5
+      md5: 6ed666ba46b3807a3d818ae69adb873c
+      size: 28686033
+    - path: corner_fisher_EM_GW_Noise_parameters.pdf
+      hash: md5
+      md5: 7c043dab8ebe850ec1eb44b21da18185
+      size: 16151
+    - path: corner_fisher_EM_GW_cosmology_params.pdf
+      hash: md5
+      md5: b9efbdd5b8d05337c974fe2019200b7d
+      size: 1506588
+    - path: corner_fisher_EM_GW_lens_light.pdf
+      hash: md5
+      md5: d4b9ba21a05215128f60f07eb7234fd3
+      size: 18744441
+    - path: corner_fisher_EM_GW_lens_mass.pdf
+      hash: md5
+      md5: 9a78d0056859dee9ed0ab56a01451593
+      size: 13537952
+    - path: corner_fisher_EM_GW_source_light.pdf
+      hash: md5
+      md5: c24bda120eec4053c8d30a94cca4ca98
+      size: 8102371
+    - path: lens_system_epl_shear.pdf
+      hash: md5
+      md5: 37e9919005eb058db09f8680de11f731
+      size: 132807
+    - path: noise_map_and_histogram.pdf
+      hash: md5
+      md5: 292df62d3fba41f2919a3cebeba68fba
+      size: 23709
+    - path: simulated_lensing_images_with_gw_positions.pdf
+      hash: md5
+      md5: 7492def6fe3c71df665d1ef90364ce5a
+      size: 39729
+    - path: simulated_lensing_images_with_gw_positions_pixel_grid.pdf
+      hash: md5
+      md5: 85c152885df70aca451761f62a82c017
+      size: 21936
