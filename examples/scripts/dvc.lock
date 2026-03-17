@@ -8,10 +8,6 @@ stages:
       md5: bf47ee6850a28a04583ab2ba2c5188fe
       size: 12227
     outs:
-    - path: GW image_positions.pdf
-      hash: md5
-      md5: d1d576b2121f5ac438f47030eb52e0b3
-      size: 1713306
     - path: approx_banana_results.pkl
       hash: md5
       md5: 04ebd56224b5fde5091606004866a4a7
