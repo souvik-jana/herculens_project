@@ -4,6 +4,7 @@ stages:
     deps:
     - example_usage_gw_only.py
     outs:
+    - GW_image_positions.pdf
     - approx_banana_results.pkl
     - cosmology_params.pdf
     - lens_mass.pdf

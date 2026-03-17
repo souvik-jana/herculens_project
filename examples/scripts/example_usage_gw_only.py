@@ -7,6 +7,8 @@ jax.config.update("jax_enable_x64", True)
 jax.config.update("jax_platform_name", "cpu")
 import os
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=20"
+import numpyro
+from numpyro import distributions as dist
 
 # Get the devices
 from gwemfish.jaxcosmo import JAXCosmology
@@ -246,7 +248,8 @@ print(f"Generated {n_fisher_samples} Fisher samples from covariance matrix")
 print("\nRunning MCMC with banana model (approximate likelihood)...")
 fisher_prob_model = ProbModelFisher_GW_only(
     keys_to_include=keys_to_include,
-    approx_logp=approx_logp)
+    approx_logp=approx_logp,
+    priors={ 'T_star': lambda: numpyro.sample('T_star', dist.Uniform(1e4, 1e8)), 'dL': lambda: numpyro.sample('dL', dist.Uniform(0.0, 61800.0)), 'lens_theta_E': lambda: numpyro.sample('lens_theta_E', dist.Uniform(0.1, 10.0)), 'lens_e1': lambda: numpyro.sample('lens_e1', dist.Uniform(-0.8, 0.8)), 'lens_e2': lambda: numpyro.sample('lens_e2', dist.Uniform(-0.8, 0.8)), 'lens_gamma': lambda: numpyro.sample('lens_gamma', dist.Uniform(1.95, 2.5)), 'lens_gamma1': lambda: numpyro.sample('lens_gamma1', dist.Uniform(-0.8, 0.8)), 'lens_gamma2': lambda: numpyro.sample('lens_gamma2', dist.Uniform(-0.8, 0.8)), })
 
 pickle_path = "approx_banana_results.pkl"
 if os.path.exists(pickle_path):
