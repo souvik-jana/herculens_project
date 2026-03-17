@@ -1,58 +1,14 @@
-import sys
-import os
-
-NCPUS = 8
-os.environ['OMP_NUM_THREADS'] = str(NCPUS)
-os.environ['MKL_NUM_THREADS'] = str(NCPUS)
-os.environ['OPENBLAS_NUM_THREADS'] = str(NCPUS)
-os.environ['NUMEXPR_NUM_THREADS'] = str(NCPUS)
-
-# Set JAX configuration
-os.environ['JAX_ENABLE_X64'] = 'True'
-os.environ['JAX_PLATFORM_NAME'] = 'cpu'
-os.environ['XLA_FLAGS'] = f'--xla_force_host_platform_device_count={NCPUS}'
 import jax
-# Set the number of CPU devices to use
-jax.config.update('jax_num_cpu_devices', 8)
-
-print("=" * 60)
-print(f"Requested CPU cores: {NCPUS}")
-print(f"Thread limits: OMP={os.environ['OMP_NUM_THREADS']}")
-print(f"JAX configuration: X64={os.environ['JAX_ENABLE_X64']}, Platform={os.environ['JAX_PLATFORM_NAME']}")
-print(f"Actual available CPU count: {os.cpu_count()}")
-print(f"JAX device count: {jax.device_count()}")  
-print(f"JAX local device count: {jax.local_device_count()}")
-devices = jax.devices()
-print(f"JAX devices: {devices}")
-print("=" * 60)
-import multiprocessing
+import pickle
+import pylab as plt
+# Set jax to use float64
+jax.config.update("jax_enable_x64", True)
+# Use CPU with 24 cores
+jax.config.update("jax_platform_name", "cpu")
 import os
-import psutil
-
-# Total CPU cores (physical)
-print("Physical CPU cores:", psutil.cpu_count(logical=False))
-
-# Total logical cores (with hyperthreading)
-print("Logical CPU cores:", psutil.cpu_count(logical=True))
-
-# Alternative method
-print("CPU count (multiprocessing):", multiprocessing.cpu_count())
-
-# Check current CPU frequency
-cpu_freq = psutil.cpu_freq()
-print(f"CPU Frequency: {cpu_freq.current:.2f} MHz")
-# Get the number of CPU cores available
-import jax
-# Get the number of CPU cores available
-cpu_count = os.cpu_count()
-print(f"Actual available CPU count: {cpu_count}")
-
-print('JAX will use', jax.config.jax_num_cpu_devices, 'CPU devices')
+os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=20"
 
 # Get the devices
-devices = jax.devices()
-print(f"Total devices: {len(devices)}")
-print(devices)
 from gwemfish.jaxcosmo import JAXCosmology
 from gwemfish import (
     setup_lens,
@@ -79,8 +35,7 @@ from gwemfish import lensimage_gw
 # JAX is already configured by setup_jax() in cell 0
 import jax.numpy as jnp
 from numpyro.infer import Predictive
-from herculens.Util import param_util, plot_util
-import matplotlib.pyplot as plt
+from herculens.Util import param_util
 import scienceplots
 plt.style.use(['science','ieee','high-vis'])
 plt.rcParams['text.usetex'] = False
@@ -122,30 +77,8 @@ kwargs_lens, x_image_true, y_image_true, lens_mass_model = setup_lens(
     zs=DEFAULT_ZS,
     source_pos=SOURCE_POS_GW  # GW source position
 )
-import matplotlib.pyplot as plt
-from lenstronomy.Plots import lens_plot
 from lenstronomy.LensModel.lens_model import LensModel as LenstronomyLensModel
 
-lens_model_plot = LenstronomyLensModel(DEFAULT_LENS_MODEL_LIST, z_lens=DEFAULT_ZL, z_source=DEFAULT_ZS)
-fig, ax = plt.subplots(figsize=(10, 5))
-
-lens_plot.lens_model_plot(
-    ax, lensModel=lens_model_plot,
-    kwargs_lens=kwargs_lens,
-    sourcePos_x=SOURCE_POS_GW[0], sourcePos_y=SOURCE_POS_GW[1],
-    point_source=True, with_caustics=True, fast_caustic=True,
-    numPix=600, deltaPix=0.01, cmap_string="RdPu"
-)
-
-# Ensure all images and collections use the desired colormap
-cmap_string = "RdPu"
-for obj in list(ax.get_images()) + list(ax.collections):
-    if hasattr(obj, 'set_cmap'):
-        obj.set_cmap(cmap_string)
-
-plt.title("Lens System with EPL + SHEAR Model")
-plt.tight_layout()
-plt.show()
 cosmology = JAXCosmology(H0=67.3, Om0=0.316)
 # ============================================================================
 # 5. Simulate GW data
@@ -171,12 +104,12 @@ probmodel = ProbModel_GW_only(
     lens_gw=lens_gw,
 )
 
-samples, summary, extra_fields, mcmc = run_mcmc(
-    probmodel.model,
-    num_warmup=6000,
-    num_samples=18000,
-    num_chains=2
-)
+#samples, summary, extra_fields, mcmc = run_mcmc(
+#    probmodel.model,
+#    num_warmup=6000,
+#    num_samples=18000,
+#    num_chains=2
+#)
 # Single sample
 prior_sample = probmodel.get_sample(prng_key=jax.random.PRNGKey(123))
 keys_to_include = list(prior_sample.keys())
@@ -252,18 +185,11 @@ print(keys_to_include)
 truths = {k: input_params[k] for k in keys_to_include if k in input_params}
 
 # Ensure the order matches keys_to_include
-samples_no_sc = {k: samples[k] for k in keys_to_include if k in samples}
-print(f"\nSamples (after filtering): {len(samples_no_sc)} parameters")
+#samples_no_sc = {k: samples[k] for k in keys_to_include if k in samples}
+#print(f"\nSamples (after filtering): {len(samples_no_sc)} parameters")
 print(f"Truths (after filtering): {len(truths)} parameters")
 # Use utility function to create grouped corner plots
 import os
-# os.makedirs('../plots', exist_ok=True)
-figures = plot_grouped_corner(samples, param_groups, truths_dict=truths_dict,
-                              color='#2c3e50', truth_color='red', show_titles=True,
-                              title_kwargs={'fontsize': 10}, title_fmt='.3f',
-                              quantiles=[0.05, 0.5, 0.975])#,
-                            #   save_path='../plots/corner_PE_EM_GW_{group_name}.pdf')
-# [plt.show() for fig in figures]
 print(f"Computing Fisher matrix for {len(keys_to_include)} parameters:")
 print(f"  {keys_to_include}")
 
@@ -322,12 +248,24 @@ fisher_prob_model = ProbModelFisher_GW_only(
     keys_to_include=keys_to_include,
     approx_logp=approx_logp)
 
-samples_approx_banana, summary_dict_approx_banana, extra_fields_approx_banana, mcmc_obj_approx_banana = run_mcmc(
-    fisher_prob_model.model,
-    num_warmup=1000,
-    num_samples=5000,
-    num_chains=2
-)
+pickle_path = "approx_banana_results.pkl"
+if os.path.exists(pickle_path):
+    with open(pickle_path, "rb") as f:
+        data = pickle.load(f)
+        samples_approx_banana = data['samples_approx_banana']
+else:
+    samples_approx_banana, summary_dict_approx_banana, extra_fields_approx_banana, mcmc_obj_approx_banana = run_mcmc(
+        fisher_prob_model.model,
+        num_warmup=10000,
+        num_samples=5000,
+        num_chains=20
+    )
+    with open(pickle_path, "wb") as f:
+        data = {}
+        data['samples_approx_banana'] = samples_approx_banana
+        # save the data
+        pickle.dump(data, f)
+
 print("Banana model MCMC complete!")
 samples_approx = {k:samples_approx_banana[k] for k in keys_to_include}
 plot_grouped_corner(
@@ -342,21 +280,6 @@ plot_grouped_corner(
     quantiles=[0.05, 0.5, 0.975],
     param_ranges=None,
     truth_color='red')
-# # Comparison plots using utility function
-# param_groups = create_default_param_groups(samples)
-# # For 2 datasets, use plot_comparison_corner
-# param_groups_2 = {k: [p for p in v if p in samples and p in samples_cov] 
-#                   for k, v in param_groups.items() 
-#                   if any(p in samples and p in samples_cov for p in v)}
-# truths_dict_2 = {k: {p: input_params[p] for p in v if p in input_params} 
-#                  for k, v in param_groups_2.items()}
-# figures = plot_comparison_corner(samples, samples_cov, param_groups_2,
-#                                  labels=('HMC-EM+GW', 'cov-EM+GW'),
-#                                  colors=('#3B5BA7', '#D2691E'), truths_dict=truths_dict_2,
-#                                  truth_color='red', show_titles=True, title_fmt='.3f')
-
-
-
 
 # For 3+ datasets, use plot_multi_comparison_corner
 param_groups_multi = {k: [p for p in v if all(p in sd for sd in [samples_approx, samples_cov])] 
@@ -364,41 +287,20 @@ param_groups_multi = {k: [p for p in v if all(p in sd for sd in [samples_approx,
                       if any(all(p in sd for sd in [samples_approx, samples_cov]) for p in v)}
 truths_dict_multi = {k: {p: input_params[p] for p in v if p in input_params} 
                      for k, v in param_groups_multi.items()}
+group_name = "gw_only_comparison"
 figures = plot_multi_comparison_corner(
-    samples_dicts=[samples, samples_approx],#, samples_cov],
+    samples_dicts=[samples_approx, samples_cov],
     param_groups=param_groups_multi,
-    labels=['HMC-EM+GW', 'DL12-EM+GW'],#, 'Fisher-EM+GW'],#'Fisher-EM+GW'
+    labels=['DL12-EM+GW', 'Fisher-EM+GW'],#'Fisher-EM+GW'
     colors=['#2c5282','#0d9488'],# '#6b46c1'],#, '#0d9488'],# '#0d9488'  # Deep slate blue, deep purple, deep teal (rich & soothing)
-    # colors=['#4a90e2', '#7b68ee', '#5fb3b3'],
-    #colors=['#5b9bd5', '#8e7cc3', '#70adb5'],  # Sky blue, periwinkle, sage teal  # Soft blue, lavender, muted teal (soothing & distinct)
-    # colors=['#6c9bd2', '#a78fcf', '#7db3b0'],  # Light blue, soft purple, aqua
-    # colors=['#6ba3d6', '#9b8fb8', '#7fb3b8'],  # Powder blue, dusty purple, soft teal
     truths_dict=truths_dict_multi,
     truth_color='red',
     show_titles=True,
     figsize=(5, 5),
     hist_kwargs={'density': True},
-    title_fmt='.3f')#,
-#     save_path='../plots/comparison_fisher_DL12_EM_GW_{group_name}.pdf'
-# )
-[plt.show() for fig in figures]
+    title_fmt='.3f',
+    save_path="./{group_name}.pdf")
 
-
-# figures = plot_multi_comparison_corner(
-#     samples_dicts=[samples_approx, samples_cov],
-#     param_groups=param_groups_multi,
-#     labels=['DL12-EM+GW', 'Fisher-EM+GW'],#'Fisher-EM+GW'
-#     colors=['#2c5282', '#6b46c1'],#, '#0d9488'],# '#0d9488'  # Deep slate blue, deep purple, deep teal (rich & soothing)
-#     # colors=['#4a90e2', '#7b68ee', '#5fb3b3'],
-#     #colors=['#5b9bd5', '#8e7cc3', '#70adb5'],  # Sky blue, periwinkle, sage teal  # Soft blue, lavender, muted teal (soothing & distinct)
-#     # colors=['#6c9bd2', '#a78fcf', '#7db3b0'],  # Light blue, soft purple, aqua
-#     # colors=['#6ba3d6', '#9b8fb8', '#7fb3b8'],  # Powder blue, dusty purple, soft teal
-#     truths_dict=truths_dict_multi,
-#     truth_color='red',
-#     show_titles=True,
-#     figsize=(5, 5),
-#     hist_kwargs={'density': True},
-#     title_fmt='.3f')#,
-# #     save_path='../plots/comparison_fisher_DL12_EM_GW_{group_name}.pdf'
-# # )
-# # [plt.show() for fig in figures]
+for fig in figures:
+    fig.savefig(f"figure_{figures.index(fig)}.png")
+    plt.close(fig)

@@ -30,6 +30,7 @@ dependencies = [
     "helens @ git+https://github.com/Herculens/helens",
     "arviz",
     "ipython>=9.9.0",
+    "jax[cuda12]>=0.9.0",
 ]
 
 [build-system]
