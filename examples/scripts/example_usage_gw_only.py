@@ -170,7 +170,7 @@ param_groups = {
     'source_light': [k for k in input_params.keys() if k.startswith('source_')],
     'lens_mass': [k for k in input_params.keys() if k.startswith('lens_')],
     'cosmology_params': [k for k in input_params.keys() if k in ['T_star', 'dL']],
-    'GW image_positions': [k for k in input_params.keys() if k in ['image_x1', 'image_y1', 'image_x2', 'image_y2', 'image_x3', 'image_y3', 'image_x4', 'image_y4']],
+    'GW_image_positions': [k for k in input_params.keys() if k in ['image_x1', 'image_y1', 'image_x2', 'image_y2', 'image_x3', 'image_y3', 'image_x4', 'image_y4']],
     'GW source_position': [k for k in input_params.keys() if k in ['y0gw', 'y1gw']],
     'noise_params': [k for k in input_params.keys() if k in ['noise_sigma_bkg']],
 }

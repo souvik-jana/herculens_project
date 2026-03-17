@@ -545,6 +545,7 @@ class ProbModelFisher(hcl.NumpyroModel):
         uarr = jnp.array([param_dict[key] for key in self.keys_to_include])
         numpyro.factor("banana_logprob", self.approx_logp(uarr))
 
+priors_gw_default = { 'T_star': lambda: numpyro.sample('T_star', dist.Uniform(1e4, 1e8)), 'dL': lambda: numpyro.sample('dL', dist.Uniform(10000.0, 21800.0)), 'lens_theta_E': lambda: numpyro.sample('lens_theta_E', dist.Uniform(0.1, 10.0)), 'lens_e1': lambda: numpyro.sample('lens_e1', dist.Uniform(-0.8, 0.8)), 'lens_e2': lambda: numpyro.sample('lens_e2', dist.Uniform(-0.8, 0.8)), 'lens_gamma': lambda: numpyro.sample('lens_gamma', dist.Uniform(1.95, 2.5)), 'lens_gamma1': lambda: numpyro.sample('lens_gamma1', dist.Uniform(-0.8, 0.8)), 'lens_gamma2': lambda: numpyro.sample('lens_gamma2', dist.Uniform(-0.8, 0.8)), }
 
 class ProbModel_GW_only(hcl.NumpyroModel):
     """Probabilistic model for joint EM+GW parameter estimation."""
@@ -662,7 +663,7 @@ class ProbModel_GW_only(hcl.NumpyroModel):
         # GW likelihood terms
         gw_obs = self.gw_observations
         sigma_td = 0.005 * gw_obs['time_delays']
-        sigma_dL_eff = 0.2 * gw_obs['dL_eff']
+        sigma_dL_eff = 0.05 * gw_obs['dL_eff']
         epsilon = 0.001 * jnp.ones_like(betx_x_diff)
         
         numpyro.sample('tdelays_obs', dist.Independent(dist.Normal(model_time_delays, sigma_td), 1), 
@@ -674,9 +675,6 @@ class ProbModel_GW_only(hcl.NumpyroModel):
         numpyro.sample('bety_y_diff', dist.Independent(dist.Normal(jnp.zeros_like(bety_y_diff), epsilon), 1), 
                       obs=bety_y_diff)
 
-        
-    
-
 class ProbModelFisher_GW_only(hcl.NumpyroModel):
     """Probabilistic model with approximate likelihood from Fisher matrix.
     
@@ -684,7 +682,9 @@ class ProbModelFisher_GW_only(hcl.NumpyroModel):
     log-probability instead of computing the full likelihood.
     """
     
-    def __init__(self, keys_to_include, approx_logp):
+    def __init__(self, keys_to_include, approx_logp, 
+                 priors={ 'T_star': lambda: numpyro.sample('T_star', dist.Uniform(1e4, 1e8)), 'dL': lambda: numpyro.sample('dL', dist.Uniform(10000.0, 21800.0)), 'lens_theta_E': lambda: numpyro.sample('lens_theta_E', dist.Uniform(0.1, 10.0)), 'lens_e1': lambda: numpyro.sample('lens_e1', dist.Uniform(-0.8, 0.8)), 'lens_e2': lambda: numpyro.sample('lens_e2', dist.Uniform(-0.8, 0.8)), 'lens_gamma': lambda: numpyro.sample('lens_gamma', dist.Uniform(1.95, 2.5)), 'lens_gamma1': lambda: numpyro.sample('lens_gamma1', dist.Uniform(-0.8, 0.8)), 'lens_gamma2': lambda: numpyro.sample('lens_gamma2', dist.Uniform(-0.8, 0.8)), }
+                 ):
         """Initialize Fisher model with approximate likelihood.
         
         Args:
@@ -694,6 +694,7 @@ class ProbModelFisher_GW_only(hcl.NumpyroModel):
         self.keys_to_include = keys_to_include
         self.approx_logp = approx_logp
         self.pix_scl = 0.4  # Pixel scale in arcsec
+        self.priors = priors
         super().__init__()
     
     def model(self):
@@ -710,28 +711,7 @@ class ProbModelFisher_GW_only(hcl.NumpyroModel):
         y_image_true = jnp.array([ 2.16216848, -1.97584213, -0.3096334 , -0.19729149])
         
         # Prior distributions (matching ProbModel.model())
-        priors = {
-            # 'source_amp': lambda: numpyro.sample('source_amp', dist.TruncatedNormal(4.0, 1.0, low=2.4, high=10.0)),
-            # 'source_R_sersic': lambda: numpyro.sample('source_R_sersic', dist.TruncatedNormal(0.5, 0.4, low=0.05)),
-            # 'source_n': lambda: numpyro.sample('source_n', dist.Uniform(1., 2.5)),
-            # 'source_e1': lambda: numpyro.sample('source_e1', dist.TruncatedNormal(0.05, 0.06, low=-0.3, high=0.3)),
-            # 'source_e2': lambda: numpyro.sample('source_e2', dist.TruncatedNormal(0.05, 0.06, low=-0.3, high=0.3)),
-            # 'light_center_x': lambda: numpyro.sample('light_center_x', dist.Normal(0., self.pix_scl/2)),
-            # 'light_center_y': lambda: numpyro.sample('light_center_y', dist.Normal(0., self.pix_scl/2)),
-            # 'light_e1': lambda: numpyro.sample('light_e1', dist.TruncatedNormal(0., 0.2, low=-0.3, high=0.3)),
-            # 'light_e2': lambda: numpyro.sample('light_e2', dist.TruncatedNormal(0., 0.2, low=-0.3, high=0.3)),
-            # 'light_amp': lambda: numpyro.sample('light_amp', dist.TruncatedNormal(8, 2.0, low=0.0, high=9.5)),
-            # 'light_R_sersic': lambda: numpyro.sample('light_R_sersic', dist.TruncatedNormal(1.0, 0.5, low=0.88, high=1.15)),
-            # 'light_n': lambda: numpyro.sample('light_n', dist.Uniform(2.4, 5.)),
-            'T_star': lambda: numpyro.sample('T_star', dist.Uniform(1e4, 1e8)),
-            'dL': lambda: numpyro.sample('dL', dist.Uniform(10000.0, 21800.0)),
-            'lens_theta_E': lambda: numpyro.sample('lens_theta_E', dist.Uniform(0.1, 10.0)),
-            'lens_e1': lambda: numpyro.sample('lens_e1', dist.Uniform(-0.8, 0.8)),
-            'lens_e2': lambda: numpyro.sample('lens_e2', dist.Uniform(-0.8, 0.8)),
-            'lens_gamma': lambda: numpyro.sample('lens_gamma', dist.Uniform(1.95, 2.5)),
-            'lens_gamma1': lambda: numpyro.sample('lens_gamma1', dist.Uniform(-0.8, 0.8)),
-            'lens_gamma2': lambda: numpyro.sample('lens_gamma2', dist.Uniform(-0.8, 0.8)),
-        }
+        priors = self.priors
         
         # Sample parameters in keys_to_include
         param_dict = {}
