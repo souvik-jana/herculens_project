@@ -727,14 +727,14 @@ class ProbModelFisher_GW_only(hcl.NumpyroModel):
             elif key.startswith('image_x'):
                 i = int(key[-1]) - 1
                 mean_x = x_image_true[i]
-                minx = mean_x - delx[i]/2
-                maxx = mean_x + delx[i]/2
+                minx = -20
+                maxx = 20
                 param_dict[key] = numpyro.sample(key, dist.Uniform(minx, maxx))
             elif key.startswith('image_y'):
                 i = int(key[-1]) - 1
                 mean_y = y_image_true[i]
-                miny = mean_y - dely[i]/2
-                maxy = mean_y + dely[i]/2
+                miny = -20
+                maxy = 20
                 param_dict[key] = numpyro.sample(key, dist.Uniform(miny, maxy))
             else:
                 raise ValueError(f"Parameter '{key}' in keys_to_include is not recognized. "
