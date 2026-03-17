@@ -1,0 +1,78 @@
+schema: '2.0'
+stages:
+  my_first_dvc:
+    cmd: uv run em_gw_pe_mcmc_hmc.py
+    deps:
+    - path: em_gw_pe_mcmc_hmc.py
+      hash: md5
+      md5: 1c04033ee7beca4172f61224ac406340
+      size: 109912
+    outs:
+    - path: ../data/inference_results_PE_EM.pkl
+      hash: md5
+      md5: 58800454c52b7543c0b15b8599e6d612
+      size: 20373044
+    - path: corner_PE_EM_GW_GW image_positions.pdf
+      hash: md5
+      md5: 4bfb0a50bd49322e87dd1d5be64a9ce4
+      size: 13932089
+    - path: corner_PE_EM_GW_cosmology_params.pdf
+      hash: md5
+      md5: 41cab2813c4e4da87bd2a21f58e49b0d
+      size: 567457
+    - path: corner_PE_EM_GW_lens_light.pdf
+      hash: md5
+      md5: 1177dc10a7eb845301f6b6bd89b402c2
+      size: 7295917
+    - path: corner_PE_EM_GW_lens_mass.pdf
+      hash: md5
+      md5: eec76a2ece732a5ee71d715e72d5ed74
+      size: 5001121
+    - path: corner_PE_EM_GW_noise_params.pdf
+      hash: md5
+      md5: b93faf2574311dee066c051b5c6fb3ef
+      size: 16374
+    - path: corner_PE_EM_GW_source_light.pdf
+      hash: md5
+      md5: 26efad46e8250fb06badf2674f6e95ba
+      size: 2979506
+    - path: corner_fisher_EM_GW_GW image_positions.pdf
+      hash: md5
+      md5: 13ed5beffc87a6b8b740abb04651d16d
+      size: 29404286
+    - path: corner_fisher_EM_GW_Noise_parameters.pdf
+      hash: md5
+      md5: fd52d4ef47e86e55951e3b9257c7313b
+      size: 19380
+    - path: corner_fisher_EM_GW_cosmology_params.pdf
+      hash: md5
+      md5: 8d472ca89bbad3a49eb77fb5198a952d
+      size: 1519944
+    - path: corner_fisher_EM_GW_lens_light.pdf
+      hash: md5
+      md5: 59ebb7bd2db82f94eb820faf704dc7fe
+      size: 19985742
+    - path: corner_fisher_EM_GW_lens_mass.pdf
+      hash: md5
+      md5: b48ec01e0c752f588db3e9d6fae97607
+      size: 13937414
+    - path: corner_fisher_EM_GW_source_light.pdf
+      hash: md5
+      md5: 801f4a72506628858ac66ab028519619
+      size: 8140820
+    - path: lens_system_epl_shear.pdf
+      hash: md5
+      md5: ffe3262b88a64e4ca7e06f38f41e48bf
+      size: 151127
+    - path: noise_map_and_histogram.pdf
+      hash: md5
+      md5: 051390ca5b1e881465d07e0cd6dd5858
+      size: 27590
+    - path: simulated_lensing_images_with_gw_positions.pdf
+      hash: md5
+      md5: 74807721971d872918bd23aaf4819e00
+      size: 45439
+    - path: simulated_lensing_images_with_gw_positions_pixel_grid.pdf
+      hash: md5
+      md5: 90ee0d50276b2a45a51c44627989c90c
+      size: 26355
