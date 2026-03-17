@@ -1,1 +1,0 @@
-../../gwemfish/lensimage_gw.py

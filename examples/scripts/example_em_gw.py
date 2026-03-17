@@ -1,16 +1,62 @@
-"""
-Simple usage example for GWEMFISH pipeline.
-This script matches the structure of example_notebook.ipynb
-"""
-
 import sys
 import os
+
+NCPUS = 8
+os.environ['OMP_NUM_THREADS'] = str(NCPUS)
+os.environ['MKL_NUM_THREADS'] = str(NCPUS)
+os.environ['OPENBLAS_NUM_THREADS'] = str(NCPUS)
+os.environ['NUMEXPR_NUM_THREADS'] = str(NCPUS)
+
+# Set JAX configuration
+os.environ['JAX_ENABLE_X64'] = 'True'
+os.environ['JAX_PLATFORM_NAME'] = 'cpu'
+os.environ['XLA_FLAGS'] = f'--xla_force_host_platform_device_count={NCPUS}'
 import jax
-import jax.numpy as jnp
-from jaxcosmo import JAXCosmology
+# Set the number of CPU devices to use
+jax.config.update('jax_num_cpu_devices', 8)
+
+print("=" * 60)
+print(f"Requested CPU cores: {NCPUS}")
+print(f"Thread limits: OMP={os.environ['OMP_NUM_THREADS']}")
+print(f"JAX configuration: X64={os.environ['JAX_ENABLE_X64']}, Platform={os.environ['JAX_PLATFORM_NAME']}")
+print(f"Actual available CPU count: {os.cpu_count()}")
+print(f"JAX device count: {jax.device_count()}")  
+print(f"JAX local device count: {jax.local_device_count()}")
+devices = jax.devices()
+print(f"JAX devices: {devices}")
+print("=" * 60)
+import multiprocessing
+import os
+import psutil
+
+# Total CPU cores (physical)
+print("Physical CPU cores:", psutil.cpu_count(logical=False))
+
+# Total logical cores (with hyperthreading)
+print("Logical CPU cores:", psutil.cpu_count(logical=True))
+
+# Alternative method
+print("CPU count (multiprocessing):", multiprocessing.cpu_count())
+
+# Check current CPU frequency
+cpu_freq = psutil.cpu_freq()
+print(f"CPU Frequency: {cpu_freq.current:.2f} MHz")
+# Get the number of CPU cores available
+import jax
+# Get the number of CPU cores available
+cpu_count = os.cpu_count()
+print(f"Actual available CPU count: {cpu_count}")
+
+print('JAX will use', jax.config.jax_num_cpu_devices, 'CPU devices')
+
+# Get the devices
+devices = jax.devices()
+print(f"Total devices: {len(devices)}")
+print(devices)
+from gwemfish.jaxcosmo import JAXCosmology
 from gwemfish import (
-    setup_jax,
     setup_lens,
+    setup_jax,
     setup_pixel_grid, setup_psf, setup_noise,
     simulate_em, simulate_gw,
     ProbModel, ProbModelSourcePlane, ProbModelFisher,
@@ -26,38 +72,25 @@ from gwemfish import (
     DEFAULT_SOURCE_LIGHT_MODEL, DEFAULT_LENS_LIGHT_MODEL
 )
 import herculens as hcl
-import lensimage_gw
+from gwemfish import lensimage_gw
+# JAX is already configured by setup_jax() in cell 0
+import jax.numpy as jnp
 from herculens.Util import param_util, plot_util
 import matplotlib.pyplot as plt
-
-# ============================================================================
-# 0. Setup JAX configuration (do this first!)
-# ============================================================================
-NCPUS = 8
-os.environ['OMP_NUM_THREADS'] = str(NCPUS)
-os.environ['MKL_NUM_THREADS'] = str(NCPUS)
-os.environ['OPENBLAS_NUM_THREADS'] = str(NCPUS)
-os.environ['NUMEXPR_NUM_THREADS'] = str(NCPUS)
-
-# Set JAX configuration
-os.environ['JAX_ENABLE_X64'] = 'True'
-os.environ['JAX_PLATFORM_NAME'] = 'cpu'
-os.environ['XLA_FLAGS'] = f'--xla_force_host_platform_device_count={NCPUS}'
-
-# Configure JAX using setup_jax
-setup_jax(ncpus=NCPUS, enable_x64=True, platform='cpu', verbose=True)
-
-print("=" * 60)
-print(f"Requested CPU cores: {NCPUS}")
-print(f"Thread limits: OMP={os.environ['OMP_NUM_THREADS']}")
-print(f"JAX configuration: X64={os.environ['JAX_ENABLE_X64']}, Platform={os.environ['JAX_PLATFORM_NAME']}")
-print(f"Actual available CPU count: {os.cpu_count()}")
-print(f"JAX device count: {jax.device_count()}")
-print(f"JAX local device count: {jax.local_device_count()}")
-devices = jax.devices()
-print(f"JAX devices: {devices}")
-print("=" * 60)
-
+import scienceplots
+plt.style.use(['science','ieee','high-vis'])
+plt.rcParams['text.usetex'] = False
+from gwemfish.corner_plot_utils import (
+    add_corner_legend,
+    set_corner_axis_ranges,
+    create_corner_ranges,
+    add_truth_lines,
+    plot_grouped_corner,
+    plot_comparison_corner,
+    plot_multi_comparison_corner,
+    create_default_param_groups,
+    plot_custom_params
+)
 # ============================================================================
 # 1. Setup lens and get image positions
 # ============================================================================
@@ -68,42 +101,33 @@ kwargs_lens, x_image_true, y_image_true, lens_mass_model = setup_lens(
     zs=DEFAULT_ZS,
     source_pos=DEFAULT_SOURCE_POS_GW  # GW source position
 )
+import matplotlib.pyplot as plt
+from lenstronomy.Plots import lens_plot
+from lenstronomy.LensModel.lens_model import LensModel as LenstronomyLensModel
 
-# Optional: Plot lens model with lenstronomy
-try:
-    from lenstronomy.Plots import lens_plot
-    from lenstronomy.LensModel.lens_model import LensModel as LenstronomyLensModel
-    
-    lens_model_plot = LenstronomyLensModel(DEFAULT_LENS_MODEL_LIST, z_lens=DEFAULT_ZL, z_source=DEFAULT_ZS)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    
-    lens_plot.lens_model_plot(
-        ax, lensModel=lens_model_plot,
-        kwargs_lens=kwargs_lens,
-        sourcePos_x=DEFAULT_SOURCE_POS_GW[0], sourcePos_y=DEFAULT_SOURCE_POS_GW[1],
-        point_source=True, with_caustics=True, fast_caustic=True,
-        numPix=600, deltaPix=0.01, cmap_string="RdPu"
-    )
-    
-    # Ensure all images and collections use the desired colormap
-    cmap_string = "RdPu"
-    for obj in list(ax.get_images()) + list(ax.collections):
-        if hasattr(obj, 'set_cmap'):
-            obj.set_cmap(cmap_string)
-    
-    plt.title("Lens System with EPL + SHEAR Model")
-    plt.tight_layout()
-    plt.show()
-except ImportError:
-    print("lenstronomy not available, skipping lens plot")
+lens_model_plot = LenstronomyLensModel(DEFAULT_LENS_MODEL_LIST, z_lens=DEFAULT_ZL, z_source=DEFAULT_ZS)
+fig, ax = plt.subplots(figsize=(10, 5))
 
-# ============================================================================
-# 2. Setup cosmology
-# ============================================================================
+lens_plot.lens_model_plot(
+    ax, lensModel=lens_model_plot,
+    kwargs_lens=kwargs_lens,
+    sourcePos_x=DEFAULT_SOURCE_POS_GW[0], sourcePos_y=DEFAULT_SOURCE_POS_GW[1],
+    point_source=True, with_caustics=True, fast_caustic=True,
+    numPix=600, deltaPix=0.01, cmap_string="RdPu"
+)
+
+# Ensure all images and collections use the desired colormap
+cmap_string = "RdPu"
+for obj in list(ax.get_images()) + list(ax.collections):
+    if hasattr(obj, 'set_cmap'):
+        obj.set_cmap(cmap_string)
+
+plt.title("Lens System with EPL + SHEAR Model")
+plt.tight_layout()
+plt.show()
 cosmology = JAXCosmology(H0=67.3, Om0=0.316)
-
 # ============================================================================
-# 3. Setup EM observation components
+# 2. Setup EM observation components
 # ============================================================================
 pixel_grid = setup_pixel_grid(**DEFAULT_PIXEL_GRID_KWARGS)
 psf = setup_psf(**DEFAULT_PSF_KWARGS)
@@ -112,14 +136,12 @@ noise_inf = setup_noise(**DEFAULT_NOISE_KWARGS_INFERENCE)
 exposure_time = DEFAULT_NOISE_KWARGS_INFERENCE['exposure_time']
 
 # ============================================================================
-# 4. Setup light models
+# 3. Setup light models
 # ============================================================================
-source_model = DEFAULT_SOURCE_LIGHT_MODEL()  # or: hcl.LightModel([hcl.SersicElliptic()])
-lens_light_model = DEFAULT_LENS_LIGHT_MODEL()  # or: hcl.LightModel([hcl.SersicElliptic()])
+source_model = DEFAULT_SOURCE_LIGHT_MODEL() # or set : hcl.LightModel([hcl.SersicElliptic()])
 
-# ============================================================================
-# 5. Simulate EM data
-# ============================================================================
+lens_light_model = DEFAULT_LENS_LIGHT_MODEL() # or set : hcl.LightModel([hcl.SersicElliptic()])
+pixel_grid
 em_obs, lens_image = simulate_em(
     kwargs_lens=kwargs_lens,
     kwargs_source=DEFAULT_KWARGS_SOURCE,
@@ -134,9 +156,8 @@ em_obs, lens_image = simulate_em(
     exposure_time=exposure_time,
     seed=87651
 )
-
 # ============================================================================
-# 6. Plotting with herculens Plotter
+# 4. Plotting with herculens Plotter
 # ============================================================================
 # Plotting engine
 plotter = hcl.Plotter(flux_vmin=8e-3, flux_vmax=6e-1)
@@ -147,12 +168,10 @@ plotter.set_data(em_obs['data'])
 # Compute source surface brightness
 source_input = lens_image.source_surface_brightness(DEFAULT_KWARGS_SOURCE, de_lensed=True, unconvolved=True)
 plotter.set_ref_source(source_input)
-
-# ============================================================================
-# 7. Visualize simulated products using the image grid xx and yy and scatter image positions
-# ============================================================================
 xx, yy = pixel_grid.pixel_coordinates
-
+# ============================================================================
+# 5. Visualize simulated products using the image grid xx and yy and scatter image positions
+# ============================================================================
 # Generate clean image (no noise)
 image_clean = lens_image.model(
     kwargs_lens=kwargs_lens,
@@ -171,6 +190,7 @@ plot_util.nice_colorbar(img1)
 ax1.set_title("Clean lensing image (RA/Dec)")
 ax1.set_xlabel("RA [arcsec]")
 ax1.set_ylabel("Dec [arcsec]")
+
 # Scatter the true image positions
 ax1.scatter(x_image_true, y_image_true, color='k', marker='x', s=60, label='GW')
 legend = ax1.legend()
@@ -183,6 +203,7 @@ plot_util.nice_colorbar(img2)
 ax2.set_title("Noisy observation data (RA/Dec)")
 ax2.set_xlabel("RA [arcsec]")
 ax2.set_ylabel("Dec [arcsec]")
+
 # Scatter the true image positions
 ax2.scatter(x_image_true, y_image_true, color='k', marker='x', s=60, label='GW')
 legend = ax2.legend()
@@ -191,27 +212,24 @@ for text in legend.get_texts():
 
 fig.tight_layout()
 plt.show()
-
-# Get pixel coordinate of gw images
+#Get pixel coordinate of gw images
 x_pix_gw, y_pix_gw = pixel_grid.map_coord2pix(x_image_true, y_image_true)
 
-# visualize simulated products in pixel coordinates
+# visualize simulated products
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
 img1 = ax1.imshow(image_clean, origin='lower', norm=plotter.norm_flux, cmap=plotter.cmap_flux)
 plot_util.nice_colorbar(img1)
 ax1.set_title("Clean lensing image")
 ax1.scatter(x_pix_gw, y_pix_gw, color='black', marker='x', s=60, label='GW')
-ax1.legend()
 img2 = ax2.imshow(data, origin='lower', norm=plotter.norm_flux, cmap=plotter.cmap_flux)
 ax2.set_title("Noisy observation data")
 plot_util.nice_colorbar(img2)
 ax2.scatter(x_pix_gw, y_pix_gw, color='black', marker='x', s=60, label='GW')
-ax2.legend()
 fig.tight_layout()
 plt.show()
-
+cosmology = JAXCosmology(H0=67.3, Om0=0.316)
 # ============================================================================
-# 8. Simulate GW data
+# 5. Simulate GW data
 # ============================================================================
 x_img_gw, y_img_gw, gw_obs, data_GW, lens_gw = simulate_gw(
     source_pos=DEFAULT_SOURCE_POS_GW,
@@ -222,9 +240,12 @@ x_img_gw, y_img_gw, gw_obs, data_GW, lens_gw = simulate_gw(
     zs=DEFAULT_ZS,
     lens_model_list=DEFAULT_LENS_MODEL_LIST
 )
-
+data_GW
+x_img_gw
+y_img_gw
+from gwemfish.data_sim import compute_gw_from_images
 # ============================================================================
-# 9. Run inference - Image Plane (directly sample image positions)
+# 6. Run inference - Image Plane (directly sample image positions)
 # ============================================================================
 probmodel = ProbModel(
     n_images=4,
@@ -235,6 +256,7 @@ probmodel = ProbModel(
     noise=noise_inf
 )
 
+# Turn this off if you don't want to run MCMC
 samples, summary, extra_fields, mcmc = run_mcmc(
     probmodel.model,
     num_warmup=6000,
@@ -242,9 +264,10 @@ samples, summary, extra_fields, mcmc = run_mcmc(
     num_chains=2
 )
 
-# ============================================================================
-# 10. Create complete input parameter dictionary (for truth values)
-# ============================================================================
+# Single sample to extract the keys of the model
+prior_sample = probmodel.get_sample(prng_key=jax.random.PRNGKey(123))
+keys_to_include = list(prior_sample.keys())
+print(keys_to_include)
 # Compute luminosity distance from source redshift using jaxcosmo
 dL_true = cosmology.luminosity_distance(DEFAULT_ZS)
 
@@ -318,42 +341,43 @@ input_params = {
     # ========================================================================
     'noise_sigma_bkg': DEFAULT_NOISE_KWARGS_SIMU['background_rms'],  # 0.01 - Background noise RMS
 }
-
 # ============================================================================
-# 11. Create parameter groups for visualization
+# 10. Create parameter groups for visualization
 # ============================================================================
 param_groups = {
-    'lens_light': [k for k in samples.keys() if k.startswith('light_')],
-    'source_light': [k for k in samples.keys() if k.startswith('source_')],
-    'lens_mass': [k for k in samples.keys() if k.startswith('lens_')],
-    'cosmology_params': [k for k in samples.keys() if k in ['T_star', 'dL']],
-    'GW image_positions': [k for k in samples.keys() if k in ['image_x1', 'image_y1', 'image_x2', 'image_y2', 'image_x3', 'image_y3', 'image_x4', 'image_y4']],
-    'GW source_position': [k for k in samples.keys() if k in ['y0gw', 'y1gw']],
-    'noise_params': [k for k in samples.keys() if k in ['noise_sigma_bkg']],
+    'lens_light': [k for k in input_params.keys() if k.startswith('light_')],
+    'source_light': [k for k in input_params.keys() if k.startswith('source_')],
+    'lens_mass': [k for k in input_params.keys() if k.startswith('lens_')],
+    'cosmology_params': [k for k in input_params.keys() if k in ['T_star', 'dL']],
+    'GW image_positions': [k for k in input_params.keys() if k in ['image_x1', 'image_y1', 'image_x2', 'image_y2', 'image_x3', 'image_y3', 'image_x4', 'image_y4']],
+    'GW source_position': [k for k in input_params.keys() if k in ['y0gw', 'y1gw']],
+    'noise_params': [k for k in input_params.keys() if k in ['noise_sigma_bkg']],
 }
-param_groups = {k: [p for p in v if p in samples] for k, v in param_groups.items() if any(p in samples for p in v)}
+param_groups = {k: [p for p in v if p in input_params] for k, v in param_groups.items() if any(p in input_params for p in v)}
 truths_dict = {k: {p: input_params[p] for p in v if p in input_params} for k, v in param_groups.items()}
 
 print(f"\nParameter groups created: {list(param_groups.keys())}")
-
-# ============================================================================
-# 12. Process samples and prepare for visualization
-# ============================================================================
 # Exclude certain keys from samples
 keys_to_exclude = ['D_dt']  # Add any other keys to exclude
-keys_to_include = [k for k in samples.keys() if k not in keys_to_exclude]
+keys_to_include = [k for k in keys_to_include if k not in keys_to_exclude]
+
+# Comment this if there is no MCMC run
 # Ensure the order matches keys_to_include
 samples_no_sc = {k: samples[k] for k in keys_to_include if k in samples}
-truths = {k: input_params[k] for k in keys_to_include if k in input_params}
 print(f"\nSamples (after filtering): {len(samples_no_sc)} parameters")
+
+truths = {k: input_params[k] for k in keys_to_include if k in input_params}
 print(f"Truths (after filtering): {len(truths)} parameters")
-    
-# ============================================================================
-# 13. Fisher Matrix Calculation and Posterior Estimation
-# ============================================================================
-print("\n" + "=" * 80)
-print("Computing Fisher Matrix and Fisher Posterior")
-print("=" * 80)
+
+# tURN THIS OFF IF THERE IS NO MCMC RUN
+# Use utility function to create grouped corner plots
+figures = plot_grouped_corner(samples_no_sc, param_groups, truths_dict=truths_dict,
+                              color='#2c3e50', truth_color='red', show_titles=True,
+                              title_kwargs={'fontsize': 10}, title_fmt='.3f',
+                              quantiles=[0.05, 0.5, 0.975])#,
+                            #   save_path='../plots/corner_PE_EM_GW_{group_name}.pdf')
+# [plt.show() for fig in figures]
+
 
 print(f"Computing Fisher matrix for {len(keys_to_include)} parameters:")
 print(f"  {keys_to_include}")
@@ -363,7 +387,7 @@ u0 = jnp.array([input_params[k] for k in keys_to_include])
 
 # Compute Fisher matrix
 print("\nComputing gradient and Hessian (this may take a while)...")
-approx_logp, logp0, g0, H0 = compute_fisher(
+approx_logp, logp0, g0, H0, F0, Q0 = compute_fisher(
     model=probmodel.model,
     input_params=input_params,
     keys_to_include=keys_to_include,
@@ -380,7 +404,6 @@ print(f"Log-probability at expansion point: {approx_logp_value:.6f}")
 u_test = u0 + 0.01 * jnp.ones_like(u0)
 approx_logp_value_test = approx_logp(u_test)
 print(f"Log-probability with small perturbation: {approx_logp_value_test:.6f}")
-
 # Fisher matrix is the negative Hessian (information matrix)
 FM = -H0
 print(f"\nFisher matrix shape: {FM.shape}")
@@ -408,9 +431,8 @@ samples_cov_array = jax.random.multivariate_normal(key, u0, cov, shape=(n_fisher
 samples_cov = {keys_to_include[i]: samples_cov_array[:, i] 
                 for i in range(len(keys_to_include))}
 print(f"Generated {n_fisher_samples} Fisher samples from covariance matrix")
-
-# Also run MCMC with Fisher approximation model for comparison
-print("\nRunning MCMC with Fisher approximation model (approximate likelihood)...")
+# Also run MCMC with banana model for comparison
+print("\nRunning MCMC with banana model (approximate likelihood)...")
 fisher_prob_model = ProbModelFisher(
     keys_to_include=keys_to_include,
     approx_logp=approx_logp)
@@ -421,12 +443,45 @@ samples_approx_banana, summary_dict_approx_banana, extra_fields_approx_banana, m
     num_samples=5000,
     num_chains=2
 )
-print("Fisher approximation model MCMC complete!")
+print("Aprroximate Likelihood MCMC complete!")
+samples_approx = {k:samples_approx_banana[k] for k in keys_to_include}
+# # Comparison plots using utility function
+# param_groups = create_default_param_groups(samples)
+# # For 2 datasets, use plot_comparison_corner
+# param_groups_2 = {k: [p for p in v if p in samples and p in samples_cov] 
+#                   for k, v in param_groups.items() 
+#                   if any(p in samples and p in samples_cov for p in v)}
+# truths_dict_2 = {k: {p: input_params[p] for p in v if p in input_params} 
+#                  for k, v in param_groups_2.items()}
+# figures = plot_comparison_corner(samples, samples_cov, param_groups_2,
+#                                  labels=('HMC-EM+GW', 'cov-EM+GW'),
+#                                  colors=('#3B5BA7', '#D2691E'), truths_dict=truths_dict_2,
+#                                  truth_color='red', show_titles=True, title_fmt='.3f')
 
-# Filter samples_approx to only include keys_to_include
-samples_approx = {k: samples_approx_banana[k] for k in keys_to_include}
 
-# Use samples_cov for Fisher samples (from covariance matrix)
-fisher_samples = samples_cov
 
-print("\nAll computations complete!")
+
+# For 3+ datasets, use plot_multi_comparison_corner
+param_groups_multi = {k: [p for p in v if all(p in sd for sd in [samples, samples_cov, samples_approx])] 
+                      for k, v in param_groups.items() 
+                      if any(all(p in sd for sd in [samples, samples_cov, samples_approx]) for p in v)}
+truths_dict_multi = {k: {p: input_params[p] for p in v if p in input_params} 
+                     for k, v in param_groups_multi.items()}
+figures = plot_multi_comparison_corner(
+    samples_dicts=[samples, samples_approx, samples_cov],
+    param_groups=param_groups_multi,
+    labels=['HMC-EM+GW', 'DL12-EM+GW', 'Fisher-EM+GW'],#'Fisher-EM+GW'
+    colors=['#2c5282', '#6b46c1', '#0d9488'],# '#0d9488'  # Deep slate blue, deep purple, deep teal (rich & soothing)
+    # colors=['#4a90e2', '#7b68ee', '#5fb3b3'],
+    #colors=['#5b9bd5', '#8e7cc3', '#70adb5'],  # Sky blue, periwinkle, sage teal  # Soft blue, lavender, muted teal (soothing & distinct)
+    # colors=['#6c9bd2', '#a78fcf', '#7db3b0'],  # Light blue, soft purple, aqua
+    # colors=['#6ba3d6', '#9b8fb8', '#7fb3b8'],  # Powder blue, dusty purple, soft teal
+    truths_dict=truths_dict_multi,
+    truth_color='red',
+    show_titles=True,
+    figsize=(5, 5),
+    hist_kwargs={'density': True},
+    title_fmt='.3f')#,
+#     save_path='../plots/comparison_fisher_DL12_EM_GW_{group_name}.pdf'
+# )
+[plt.show() for fig in figures]

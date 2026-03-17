@@ -1,0 +1,26 @@
+schema: '2.0'
+stages:
+  make corner plots:
+    cmd: uv run example_usage_gw_only.py
+    deps:
+    - path: example_usage_gw_only.py
+      hash: md5
+      md5: ad20daa8411aed25472bde5541098ab3
+      size: 12890
+    outs:
+    - path: GW_image_positions.pdf
+      hash: md5
+      md5: bedcfb208f30a5e07d4dbd9dfd4dd06f
+      size: 2888101
+    - path: approx_banana_results.pkl
+      hash: md5
+      md5: 75e3cacb3b7c8fd610ef14c4d0da51b4
+      size: 9600982
+    - path: cosmology_params.pdf
+      hash: md5
+      md5: 0c412edbfbe65f5c8d452d8d68fd5d88
+      size: 222795
+    - path: lens_mass.pdf
+      hash: md5
+      md5: f056b1fecbfc8bd44fb7e81e90a8ca0b
+      size: 222314

@@ -545,3 +545,201 @@ class ProbModelFisher(hcl.NumpyroModel):
         uarr = jnp.array([param_dict[key] for key in self.keys_to_include])
         numpyro.factor("banana_logprob", self.approx_logp(uarr))
 
+priors_gw_default = { 'T_star': lambda: numpyro.sample('T_star', dist.Uniform(1e4, 1e8)), 'dL': lambda: numpyro.sample('dL', dist.Uniform(10000.0, 21800.0)), 'lens_theta_E': lambda: numpyro.sample('lens_theta_E', dist.Uniform(0.1, 10.0)), 'lens_e1': lambda: numpyro.sample('lens_e1', dist.Uniform(-0.8, 0.8)), 'lens_e2': lambda: numpyro.sample('lens_e2', dist.Uniform(-0.8, 0.8)), 'lens_gamma': lambda: numpyro.sample('lens_gamma', dist.Uniform(1.95, 2.5)), 'lens_gamma1': lambda: numpyro.sample('lens_gamma1', dist.Uniform(-0.8, 0.8)), 'lens_gamma2': lambda: numpyro.sample('lens_gamma2', dist.Uniform(-0.8, 0.8)), }
+
+class ProbModel_GW_only(hcl.NumpyroModel):
+    """Probabilistic model for joint EM+GW parameter estimation."""
+    
+    def __init__(self, n_images=4, gw_observations=None, lens_gw=None):
+        """Initialize probabilistic model for EM+GW joint inference.
+        
+        Args:
+            n_images: Number of lensed images
+            gw_observations: Dict with 'time_delays' and 'dL_eff'
+            lens_gw: LensImageGW instance (from simulate_gw)
+        """
+        self.n_images = n_images
+        self.gw_observations = gw_observations or {}
+        self.lens_gw = lens_gw
+        self.pix_scl = 0.4  # Pixel scale in arcsec
+        super().__init__()
+    
+    def model(self):
+        """Define the probabilistic model with priors and likelihoods.
+        
+        During inference, this is called many times with different parameter values.
+        Key operations:
+        1. Sample parameters (lens, source, light, noise_sigma_bkg, T_star, dL, image positions)
+        2. Compute model_image = lens_image.model(kwargs_lens, kwargs_source, kwargs_lens_light)
+        3. Compute noise variance: model_var = noise.C_D_model(model_image, background_rms=sigma_bkg)
+           where sigma_bkg is sampled at each step
+        4. EM likelihood: numpyro.sample('obs', Normal(model_image, sqrt(model_var)), obs=em_data)
+        5. Compute GW observables: model_gw = lens_gw.compute(x_pos, y_pos, kwargs_lens, D_dt)
+           where D_dt = (T_star*c)/(Mpc_to_m*arcsecond_to_radians**2)
+        6. GW likelihood: numpyro.sample('tdelays_obs', Normal(model_time_delays, sigma_td), ...)
+        """
+        # GW parameters
+        T_star = numpyro.sample('T_star', dist.Uniform(1e4, 1e8))  # in seconds
+        dL = numpyro.sample('dL', dist.Uniform(10000.0, 21800.0))  # in Mpc
+        
+        
+
+        # Lens mass parameters
+        lens_theta_E = jnp.asarray(2.0)#numpyro.sample('lens_theta_E', dist.Uniform(1.99, 2.01))
+        lens_e1 = numpyro.sample('lens_e1', dist.Uniform(0.15, 0.3))
+        lens_e2 = jnp.asarray(0.0)#numpyro.sample('lens_e2', dist.Uniform(0.075, 0.11))
+        lens_gamma = numpyro.sample('lens_gamma', dist.Uniform(1.95, 2.09))
+        # True lens center position (hardcoded)
+        lens_center_x = jnp.asarray(0.0)
+        lens_center_y = jnp.asarray(0.0)
+        gamma1 = jnp.asarray(0.0)#numpyro.sample('lens_gamma1', dist.Uniform(-0.006, 0.005))
+        gamma2 = jnp.asarray(0.0)#numpyro.sample('lens_gamma2', dist.Uniform(-0.005, 0.009))
+        
+        prior_lens = [
+            {
+                'theta_E': lens_theta_E,
+                'e1': lens_e1,
+                'e2': lens_e2,
+                'gamma': lens_gamma,
+                'center_x': lens_center_x,
+                'center_y': lens_center_y
+            },
+            {
+                'gamma1': gamma1,
+                'gamma2': gamma2,
+                'ra_0': jnp.asarray(0.0),
+                'dec_0': jnp.asarray(0.0)
+            }
+        ]
+        
+        # Image positions
+        # True image positions (hardcoded - these are typical values for the default lens configuration)
+        # These would normally come from solving the lens equation with true parameters
+        # x_image_true = jnp.array([ 1.90461434, -1.63544685,  0.70943792, -1.14517025])/2   # True GW image x positions
+        # y_image_true = jnp.array([-0.90999308,  1.19344445,  1.80599259, -1.50457468])/2   # True GW image y positions
+
+        x_image_true = jnp.array([ 0.39264629,  0.51222365,  1.91141776, -1.72692207])
+        y_image_true = jnp.array([ 2.16216848, -1.97584213, -0.3096334 , -0.19729149])
+
+        image_positions = []
+        x_pos_array = []
+        y_pos_array = []
+        delx = jnp.array([0.2, 0.35, 0.49, 0.3])/2
+        dely = jnp.array([0.4, 0.4, 0.35, 0.3])/2
+        # delx = jnp.array([20, 20, 20, 20])
+        # dely = jnp.array([20, 20, 20, 20])
+        
+        for i in range(self.n_images):
+            mean_x = x_image_true[i]
+            mean_y = y_image_true[i]
+            
+            minx = mean_x - delx[i]/2
+            maxx = mean_x + delx[i]/2
+            miny = mean_y - dely[i]/2
+            maxy = mean_y + dely[i]/2
+            
+            x_pos = numpyro.sample(f'image_x{i+1}', dist.Uniform(minx, maxx))
+            y_pos = numpyro.sample(f'image_y{i+1}', dist.Uniform(miny, maxy))
+
+            # x_pos = jnp.asarray(x_image_true[i])
+            # y_pos = jnp.asarray(y_image_true[i])
+            
+            image_positions.append((x_pos, y_pos))
+            x_pos_array.append(x_pos)
+            y_pos_array.append(y_pos)
+        
+        x_pos_array = jnp.array(x_pos_array)
+        y_pos_array = jnp.array(y_pos_array)
+        
+        # GW likelihood
+        (model_gw, model_time_delays, model_magnifications, model_dL_eff,
+         beta_x, beta_y, betx_x_diff, bety_y_diff) = compute_gw_from_images(
+            x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL
+        )
+
+        # betx_x_diff_det = numpyro.deterministic('betx_x_diff', betx_x_diff)
+        # bety_y_diff_det = numpyro.deterministic('bety_y_diff', bety_y_diff)
+        
+        # GW likelihood terms
+        gw_obs = self.gw_observations
+        sigma_td = 0.005 * gw_obs['time_delays']
+        sigma_dL_eff = 0.05 * gw_obs['dL_eff']
+        epsilon = 0.001 * jnp.ones_like(betx_x_diff)
+        
+        numpyro.sample('tdelays_obs', dist.Independent(dist.Normal(model_time_delays, sigma_td), 1), 
+                      obs=gw_obs['time_delays'])
+        numpyro.sample('dL_eff_obs', dist.Independent(dist.Normal(model_dL_eff, sigma_dL_eff), 1), 
+                      obs=gw_obs['dL_eff'])
+        numpyro.sample('betx_x_diff', dist.Independent(dist.Normal(jnp.zeros_like(betx_x_diff), epsilon), 1), 
+                      obs=betx_x_diff)
+        numpyro.sample('bety_y_diff', dist.Independent(dist.Normal(jnp.zeros_like(bety_y_diff), epsilon), 1), 
+                      obs=bety_y_diff)
+
+class ProbModelFisher_GW_only(hcl.NumpyroModel):
+    """Probabilistic model with approximate likelihood from Fisher matrix.
+    
+    This model uses a Taylor expansion (banana model) approximation of the
+    log-probability instead of computing the full likelihood.
+    """
+    
+    def __init__(self, keys_to_include, approx_logp, 
+                 priors={ 'T_star': lambda: numpyro.sample('T_star', dist.Uniform(1e4, 1e8)), 'dL': lambda: numpyro.sample('dL', dist.Uniform(10000.0, 21800.0)), 'lens_theta_E': lambda: numpyro.sample('lens_theta_E', dist.Uniform(0.1, 10.0)), 'lens_e1': lambda: numpyro.sample('lens_e1', dist.Uniform(-0.8, 0.8)), 'lens_e2': lambda: numpyro.sample('lens_e2', dist.Uniform(-0.8, 0.8)), 'lens_gamma': lambda: numpyro.sample('lens_gamma', dist.Uniform(1.95, 2.5)), 'lens_gamma1': lambda: numpyro.sample('lens_gamma1', dist.Uniform(-0.8, 0.8)), 'lens_gamma2': lambda: numpyro.sample('lens_gamma2', dist.Uniform(-0.8, 0.8)), }
+                 ):
+        """Initialize Fisher model with approximate likelihood.
+        
+        Args:
+            keys_to_include: List of parameter keys to include in the model
+            approx_logp: Approximate log-probability function from compute_fisher
+        """
+        self.keys_to_include = keys_to_include
+        self.approx_logp = approx_logp
+        self.pix_scl = 0.4  # Pixel scale in arcsec
+        self.priors = priors
+        super().__init__()
+    
+    def model(self):
+        """Define the probabilistic model with approximate likelihood.
+        
+        Uses the same priors as ProbModel but replaces the full likelihood
+        with the approximate log-probability from Fisher matrix expansion.
+        """
+        # True image positions (same as ProbModel)
+        # x_image_true = jnp.array([ 1.90461434, -1.63544685,  0.70943792, -1.14517025])
+        # y_image_true = jnp.array([-0.90999308,  1.19344445,  1.80599259, -1.50457468])
+
+        x_image_true = jnp.array([ 0.39264629,  0.51222365,  1.91141776, -1.72692207])
+        y_image_true = jnp.array([ 2.16216848, -1.97584213, -0.3096334 , -0.19729149])
+        
+        # Prior distributions (matching ProbModel.model())
+        priors = self.priors
+        
+        # Sample parameters in keys_to_include
+        param_dict = {}
+        # delx = jnp.array([0.2, 0.35, 0.49, 0.3])
+        # dely = jnp.array([0.4, 0.4, 0.35, 0.3])
+
+        delx = jnp.array([20, 20, 20, 20])
+        dely = jnp.array([20, 20, 20, 20])
+        
+        for key in self.keys_to_include:
+            if key in priors:
+                param_dict[key] = priors[key]()  # Sample from prior
+            elif key.startswith('image_x'):
+                i = int(key[-1]) - 1
+                mean_x = x_image_true[i]
+                minx = -20
+                maxx = 20
+                param_dict[key] = numpyro.sample(key, dist.Uniform(minx, maxx))
+            elif key.startswith('image_y'):
+                i = int(key[-1]) - 1
+                mean_y = y_image_true[i]
+                miny = -20
+                maxy = 20
+                param_dict[key] = numpyro.sample(key, dist.Uniform(miny, maxy))
+            else:
+                raise ValueError(f"Parameter '{key}' in keys_to_include is not recognized. "
+                               f"Add it to priors dict or handle image positions.")
+        
+        # Extract values in correct order and use approximate likelihood
+        uarr = jnp.array([param_dict[key] for key in self.keys_to_include])
+        numpyro.factor("banana_logprob", self.approx_logp(uarr))

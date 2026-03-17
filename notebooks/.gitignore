@@ -1,16 +1,1 @@
-/corner_fisher_EM_GW_cosmology_params.pdf
-/corner_fisher_EM_GW_GW image_positions.pdf
-/corner_fisher_EM_GW_lens_light.pdf
-/corner_fisher_EM_GW_lens_mass.pdf
-/corner_fisher_EM_GW_Noise_parameters.pdf
-/corner_fisher_EM_GW_source_light.pdf
-/corner_PE_EM_GW_cosmology_params.pdf
-/corner_PE_EM_GW_GW image_positions.pdf
-/corner_PE_EM_GW_lens_light.pdf
-/corner_PE_EM_GW_lens_mass.pdf
-/corner_PE_EM_GW_noise_params.pdf
-/corner_PE_EM_GW_source_light.pdf
-/lens_system_epl_shear.pdf
-/noise_map_and_histogram.pdf
-/simulated_lensing_images_with_gw_positions.pdf
-/simulated_lensing_images_with_gw_positions_pixel_grid.pdf
+*.pdf

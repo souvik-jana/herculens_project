@@ -14,7 +14,7 @@ import os
 
 # Import lensimage_gw from scripts directory
 sys.path.append(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'scripts'))
-import lensimage_gw
+from . import lensimage_gw
 from .config import arcsecond_to_radians, Mpc_to_m, c
 
 
