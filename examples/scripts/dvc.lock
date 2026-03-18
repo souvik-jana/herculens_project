@@ -5,22 +5,22 @@ stages:
     deps:
     - path: example_usage_gw_only.py
       hash: md5
-      md5: ad20daa8411aed25472bde5541098ab3
-      size: 12890
+      md5: 3e61dcd092cb97d8d1b08a1e74bfa4d5
+      size: 12896
     outs:
     - path: GW_image_positions.pdf
       hash: md5
-      md5: bedcfb208f30a5e07d4dbd9dfd4dd06f
-      size: 2888101
+      md5: 8ecb6f2eab5f4d7ce93b5c32201d93da
+      size: 3077176
     - path: approx_banana_results.pkl
       hash: md5
-      md5: 75e3cacb3b7c8fd610ef14c4d0da51b4
+      md5: aa7c4e049a3d2931fa2ac8ce96d820fa
       size: 9600982
     - path: cosmology_params.pdf
       hash: md5
-      md5: 0c412edbfbe65f5c8d452d8d68fd5d88
-      size: 222795
+      md5: 87a263216949885b6ae84b2f2e5f8cc5
+      size: 239541
     - path: lens_mass.pdf
       hash: md5
-      md5: f056b1fecbfc8bd44fb7e81e90a8ca0b
-      size: 222314
+      md5: 85c9fef6e638f72b4b0b5aee55252d5a
+      size: 228278

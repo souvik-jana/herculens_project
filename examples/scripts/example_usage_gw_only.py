@@ -304,6 +304,6 @@ figures = plot_multi_comparison_corner(
     title_fmt='.3f',
     save_path="./{group_name}.pdf")
 
-for fig in figures:
-    fig.savefig(f"figure_{figures.index(fig)}.png")
-    plt.close(fig)
+# for fig in figures:
+#     fig.savefig(f"figure_{figures.index(fig)}.png")
+#     plt.close(fig)
