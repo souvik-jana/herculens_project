@@ -764,76 +764,95 @@ def plot_custom_params(
     title_fmt: str = '.3f',
     quantiles: List[float] = [0.05, 0.5, 0.975],
     save_path: Optional[str] = None,
-    fim_directions: Optional[dict] = None,
-    **corner_kwargs,
+    **corner_kwargs
 ) -> plt.Figure:
     """Plot a corner plot for a custom subset of parameters.
-
+    
+    This is a simple, direct function for plotting specific parameters without
+    needing to create parameter groups.
+    
     Parameters
     ----------
     samples : dict[str, np.ndarray]
+        Dictionary mapping parameter names to sample arrays.
     params_to_plot : list[str]
+        List of parameter names to plot, e.g., ['lens_theta_E', 'lens_e1', 'lens_e2']
     truths : dict[str, float] or None
+        Dictionary of truth values {param_name: value}. Optional.
     color : str
+        Color for the corner plot.
     truth_color : str
+        Color for truth value lines.
     show_titles : bool
+        Whether to show parameter titles on plots.
     title_kwargs : dict or None
+        Keyword arguments for title formatting.
     title_fmt : str
+        Format string for titles.
     quantiles : list[float]
+        Quantiles to show in titles.
     save_path : str or None
-    fim_directions : dict or None
-        Optional FIM overlay. See plot_grouped_corner for full key spec.
+        Path to save the plot. If None, plot is not saved.
     **corner_kwargs
-
+        Additional keyword arguments passed to corner.corner().
+    
     Returns
     -------
-    matplotlib.figure.Figure
-
+    fig : matplotlib.figure.Figure
+        The figure object.
+    
     Example
     -------
+    >>> params_to_plot = ['lens_theta_E', 'lens_e1', 'lens_e2']
     >>> fig = plot_custom_params(
     ...     samples=samples,
-    ...     params_to_plot=['lens_theta_E', 'lens_e1', 'lens_e2'],
+    ...     params_to_plot=params_to_plot,
     ...     truths=input_params,
-    ...     fim_directions={
-    ...         'v_deg': v_deg, 'v_con': v_con,
-    ...         'keys_to_include': keys_to_include,
-    ...         'input_params': input_params,
-    ...         'degenerate_color': 'crimson',
-    ...         'constrained_color': 'steelblue',
-    ...     },
+    ...     save_path='../plots/corner_custom_params.pdf'
     ... )
+    >>> plt.show()
     """
     if title_kwargs is None:
         title_kwargs = {'fontsize': 10}
-
+    
+    # Filter params to only those present in samples
     params_to_plot = [p for p in params_to_plot if p in samples]
     if len(params_to_plot) < 1:
         raise ValueError("No parameters from params_to_plot found in samples dictionary")
-
+    
+    # Extract samples for these parameters
     samples_array = np.column_stack([np.asarray(samples[p]) for p in params_to_plot])
-    truths_list = [truths.get(p) if truths and p in truths else None
-                   for p in params_to_plot]
+    
 
+    # # Extract truth values (optional)
+    # truths_list = [truths.get(p) if truths and p in truths else None 
+    #                for p in params_to_plot]
+
+    if truths and any(isinstance(v, dict) for v in truths.values()):
+        truths = {p: v for group in truths.values() for p, v in group.items()}
+    truths_list = [truths.get(p) if truths else None for p in params_to_plot]
+    
+    # Create corner plot
     fig = corner.corner(
         samples_array,
         labels=params_to_plot,
         color=color,
+        # truths=truths_list,
         truth_color=truth_color,
         show_titles=show_titles,
         title_kwargs=title_kwargs,
         title_fmt=title_fmt,
         quantiles=quantiles,
-        **corner_kwargs,
+        **corner_kwargs
     )
-
+    
+    # Add truth lines (more reliable than passing truths to corner.corner)
     if any(t is not None for t in truths_list):
         add_truth_lines(fig, params_to_plot, truths_list, color=truth_color)
-
-    _maybe_add_fim(fig, params_to_plot, fim_directions, samples)
-
+    
+    # Save if requested
     if save_path:
         plt.savefig(save_path, bbox_inches='tight', dpi=300)
         print(f"Saved: {save_path}")
-
+    
     return fig
