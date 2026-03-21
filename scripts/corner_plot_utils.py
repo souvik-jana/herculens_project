@@ -742,15 +742,21 @@ def plot_custom_params(
     # Extract samples for these parameters
     samples_array = np.column_stack([np.asarray(samples[p]) for p in params_to_plot])
     
-    # Extract truth values (optional)
-    truths_list = [truths.get(p) if truths and p in truths else None 
-                   for p in params_to_plot]
+
+    # # Extract truth values (optional)
+    # truths_list = [truths.get(p) if truths and p in truths else None 
+    #                for p in params_to_plot]
+
+    if truths and any(isinstance(v, dict) for v in truths.values()):
+        truths = {p: v for group in truths.values() for p, v in group.items()}
+    truths_list = [truths.get(p) if truths else None for p in params_to_plot]
     
     # Create corner plot
     fig = corner.corner(
         samples_array,
         labels=params_to_plot,
         color=color,
+        # truths=truths_list,
         truth_color=truth_color,
         show_titles=show_titles,
         title_kwargs=title_kwargs,
