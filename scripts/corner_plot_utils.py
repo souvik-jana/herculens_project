@@ -627,7 +627,7 @@ def plot_multi_comparison_corner(
             set_corner_axis_ranges(fig, params, param_ranges)
         
         # Add title
-        plt.suptitle(f'{group_name.replace("_", " ").title()}', 
+        fig.suptitle(f'{group_name.replace("_", " ").title()}', 
                     fontsize=12, y=1.02)
         
         # Save if requested
