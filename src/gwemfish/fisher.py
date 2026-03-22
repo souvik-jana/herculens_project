@@ -139,10 +139,6 @@ def compute_fisher(model, input_params, keys_to_include, u0, rng_key=None, order
         Q0 = qua_fn(u0)
         print('Done with Quartic (4th order)')
 
-    # Build approx_logp capturing only what was computed.
-    # Closures over the tensors needed for the requested order.
-    # Must be JAX-traceable (no Python conditionals on traced values),
-    # so we select the right static closure at function-definition time.
     if order == 2:
         @jax.jit
         def approx_logp(u):
@@ -167,4 +163,162 @@ def compute_fisher(model, input_params, keys_to_include, u0, rng_key=None, order
             return taylor4
 
     return approx_logp, logp0, g0, H0, F0, Q0
+
+
+def compute_fisher_multipoint(model, input_params, keys_to_include, u0, 
+    fim_results=None, rng_key=None, order=2, alpha=1.0):
+    """Compute three-point Taylor expansion: u0, u0 + alpha*sigma*v, u0 - alpha*sigma*v.
+
+    Walks symmetrically along the most degenerate eigendirection of the
+    Hessian at u0. If fim_results is provided, uses the same eigendirection.
+    Otherwise, internally computes FIM eigendirections from -H0.
+    At each anchor the true log-probability is evaluated. The merged
+    approximation uses nearest-anchor selection.
+
+    Args:
+        model:            Numpyro model function.
+        input_params:     Dict of all parameter values.
+        keys_to_include:  Ordered list of parameter names matching u0.
+        u0:               Central expansion point, shape (n,).
+        fim_results:      Output of compute_fim_eigendirections(-H0, ...).
+        rng_key:          Random key (default: None → PRNGKey(1)).
+        order:            Taylor order at each point (2, 3, or 4).
+        alpha:            Step size in units of sigma along degenerate direction.
+                          alpha=1.0 → ±1 posterior sigma from u0.
+
+    Returns:
+        approx_logp_merged: JIT-compiled merged log-probability function.
+        points:             List of 3 dicts with keys:
+                              'u'          : anchor point
+                              'logp'       : true log-probability at anchor
+                              'approx_logp': Taylor approx function at anchor
+        fim_results:        Output of compute_fim_eigendirections(-H0, ...).
+
+    Example:
+        >>> approx_logp, points, fim_results = compute_fisher_multipoint(
+        ...     model=probmodel.model,
+        ...     input_params=input_params,
+        ...     keys_to_include=keys_to_include,
+        ...     u0=u0,
+        ...     order=2,
+        ...     alpha=1.0,
+        ... )
+        >>> fisher_model = ProbModelFisher(
+        ...     keys_to_include=keys_to_include,
+        ...     approx_logp=approx_logp,
+        ...     priors=custom_priors,
+        ... )
+    """
+    from .eigenvec_analysis import compute_fim_eigendirections
+
+    if rng_key is None:
+        rng_key = jax.random.PRNGKey(1)
+
+    # --- Seed model for true logp evaluation ---
+    seeded_model = numpyro.handlers.seed(model, rng_key)
+
+    def logdensity_fn(args):
+        log_density, _ = numpyro.infer.util.log_density(seeded_model, (), {}, args)
+        return log_density
+
+    def logdensity_fn_vec(u):
+        input_ = input_params.copy()
+        for i, key in enumerate(keys_to_include):
+            input_[key] = u[i]
+        return logdensity_fn(input_)
+
+    # --- Fisher at u0 ---
+    print('Computing Fisher at u0...')
+    approx_logp0, logp0, g0, H0, _, _ = compute_fisher(
+        model, input_params, keys_to_include, u0,
+        rng_key=rng_key, order=order)
+
+    # # --- FIM eigendirections from -H0 (internally computed) ---
+    # print('Computing FIM eigendirections from -H0...')
+    # fim_results = compute_fim_eigendirections(
+    #     FM=-H0,
+    #     keys_to_include=keys_to_include,
+    #     verbose=True,
+    # )
+
+    # v_flat     = fim_results['v_deg']
+    # sigma_flat = fim_results['sigma_deg']
+    # --- Most degenerate direction ---
+    if fim_results is not None:
+        # Use externally provided fim_results — same direction as profile scan
+        v_flat     = fim_results['v_deg']
+        sigma_flat = fim_results['sigma_deg']
+        print('Using externally provided fim_results for eigendirection.')
+    else:
+        # Compute internally from -H0
+        print('Computing FIM eigendirections internally from -H0...')
+        from .eigenvec_analysis import compute_fim_eigendirections
+        fim_results = compute_fim_eigendirections(
+            FM=-H0, keys_to_include=keys_to_include, verbose=True)
+        v_flat     = fim_results['v_deg']
+        sigma_flat = fim_results['sigma_deg']
+
+    print(f'Most degenerate direction sigma: {sigma_flat:.6g}')
+
+    # --- Symmetric anchor points ---
+    step  = alpha * float(sigma_flat) * v_flat
+    u_pos = u0 + step
+    u_neg = u0 - step
+
+    # --- True logp at each anchor ---
+    print(f'\nEvaluating true logp at u_pos (u0 + {alpha}σ along v_deg)...')
+    logp_pos = logdensity_fn_vec(u_pos)
+
+    print(f'Evaluating true logp at u_neg (u0 - {alpha}σ along v_deg)...')
+    logp_neg = logdensity_fn_vec(u_neg)
+
+    # --- Fisher at each anchor ---
+    print('\nComputing Fisher at u_pos...')
+    approx_logp_pos, _, _, _, _, _ = compute_fisher(
+        model, input_params, keys_to_include, u_pos,
+        rng_key=rng_key, order=order)
+
+    print('\nComputing Fisher at u_neg...')
+    approx_logp_neg, _, _, _, _, _ = compute_fisher(
+        model, input_params, keys_to_include, u_neg,
+        rng_key=rng_key, order=order)
+
+    points = [
+        {'u': u0,    'logp': logp0,    'approx_logp': approx_logp0},
+        {'u': u_pos, 'logp': logp_pos, 'approx_logp': approx_logp_pos},
+        {'u': u_neg, 'logp': logp_neg, 'approx_logp': approx_logp_neg},
+    ]
+
+    print(f'\nAnchor logp values:')
+    print(f'  u0    : {float(logp0):.4f}')
+    print(f'  u_pos : {float(logp_pos):.4f}')
+    print(f'  u_neg : {float(logp_neg):.4f}')
+
+    approx_fns = [p['approx_logp'] for p in points]
+    # # Debug check — Sanity check at anchors:
+    # print(f'\nSanity check at anchors:')
+    # print(f'  approx_logp0(u0)       = {float(approx_logp0(u0)):.4f}  '
+    #     f'true logp0 = {float(logp0):.4f}')
+    # print(f'  approx_logp_pos(u_pos) = {float(approx_logp_pos(u_pos)):.4f}  '
+    #     f'true logp_pos = {float(logp_pos):.4f}')
+    # print(f'  approx_logp_neg(u_neg) = {float(approx_logp_neg(u_neg)):.4f}  '
+    #     f'true logp_neg = {float(logp_neg):.4f}')
+    # --- Nearest anchor selection ---
+    u0_arr    = jnp.asarray(u0)
+    u_pos_arr = jnp.asarray(u_pos)
+    u_neg_arr = jnp.asarray(u_neg)
+
+    @jax.jit
+    def approx_logp_merged(u):
+        d0    = jnp.sqrt(jnp.sum((u - u0_arr)    ** 2))
+        d_pos = jnp.sqrt(jnp.sum((u - u_pos_arr) ** 2))
+        d_neg = jnp.sqrt(jnp.sum((u - u_neg_arr) ** 2))
+        idx_nearest = jnp.argmin(jnp.array([d0, d_pos, d_neg]))
+        return jax.lax.switch(
+            idx_nearest,
+            [approx_fns[0], approx_fns[1], approx_fns[2]],
+            u,
+        )
+
+    return approx_logp_merged, points, fim_results
 
