@@ -235,6 +235,64 @@ def simulate_gw(source_pos, kwargs_lens, lens_mass_model,
     return x_image, y_image, gw_obs, data_GW, lens_gw
 
 
+def simulate_gw_mst(source_pos, kwargs_lens, lens_mass_model,
+                    cosmology, zl, zs, kappa0=0.0,
+                    lens_model_list=None, solver_params=None):
+    """Simulate GW observation data with Mass Sheet Transform (MST).
+    
+    Args:
+        source_pos: Tuple (x, y) of source position in arcsec (UNSCALED)
+        kwargs_lens: List of lens mass model kwargs (UNSCALED)
+        lens_mass_model: MassModelMassSheet instance with kappa0 set
+        cosmology: Cosmology instance
+        zl: Lens redshift
+        zs: Source redshift
+        kappa0: Mass sheet convergence (default 0.0 → reduces to simulate_gw)
+        lens_model_list: List of lens model names
+        solver_params: Optional solver parameters dict
+
+    Returns:
+        x_image, y_image: Image positions (arcsec)
+        gw_obs: dict with 'time_delays' and 'dL_eff'
+        data_GW: dict with full GW data
+        lens_gw: LensImageGW instance
+    """
+    from .lens_setup import setup_lens_mst
+
+    if lens_model_list is None:
+        if hasattr(lens_mass_model, 'lens_model_list'):
+            lens_model_list = lens_mass_model.lens_model_list
+        else:
+            raise ValueError("lens_model_list must be provided")
+
+
+    _, x_image, y_image, _ = setup_lens_mst(
+        lens_model_list,
+        kwargs_lens,
+        zl,
+        zs,
+        source_pos,
+        solver_params=solver_params,
+        kappa0=kappa0
+    )
+
+    time_delay_distance = cosmology.time_delay_distance(zl, zs)
+    lens_gw = lensimage_gw.LensImageGW(lens_mass_model)
+    data_GW = lens_gw.compute(x_image, y_image, kwargs_lens, time_delay_distance)
+
+    dL = cosmology.luminosity_distance(zs)
+    magnifications = data_GW['mu']
+    dL_eff = dL / jnp.sqrt(jnp.abs(magnifications))
+    time_delays = data_GW['time_delays_in_seconds']
+
+    gw_obs = {
+        'time_delays': time_delays,
+        'dL_eff': dL_eff
+    }
+
+    return x_image, y_image, gw_obs, data_GW, lens_gw
+
+
 def compute_gw_from_images(x_image, y_image, kwargs_lens, lens_gw, 
                           T_star, dL):
     """Compute GW observables from image positions (for use during HMC inference).
