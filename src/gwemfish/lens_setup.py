@@ -91,28 +91,91 @@ def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos,
     
     return kwargs_lens, x_image_true, y_image_true, lens_mass_model
 
+# def setup_lens_mst(lens_model_list, kwargs_lens, zl, zs, source_pos,
+#                    solver_params=None, kappa0=0.0):
+#     if solver_params is None:
+#         solver_params = SOLVER_PARAMS.copy()
+
+#     import copy
+#     kwargs_lens = copy.deepcopy(kwargs_lens)
+
+#     # ----------------------------------------------------------------
+#     # Herculens — MassModelMassSheet handles MST internally
+#     # ----------------------------------------------------------------
+#     lens_mass_model = MassModelMassSheet(lens_model_list, kappa0=kappa0)
+
+#     # ----------------------------------------------------------------
+#     # Lenstronomy — just add CONVERGENCE, no scaling
+#     # ----------------------------------------------------------------
+#     if kappa0 != 0.0:
+#         lens_model_list_lenstronomy = lens_model_list + ['CONVERGENCE']
+#         kwargs_lens_lenstronomy     = kwargs_lens + [{'kappa': kappa0}]
+#     else:
+#         lens_model_list_lenstronomy = lens_model_list
+#         kwargs_lens_lenstronomy     = kwargs_lens
+
+#     lensModel = LensModel(
+#         lens_model_list=lens_model_list_lenstronomy,
+#         z_lens=zl,
+#         z_source=zs
+#     )
+#     solver_lenstronomy = LensEquationSolver(lensModel)
+
+#     # Convert kwargs to floats
+#     kwargs_lens_fixed = []
+#     for kw in kwargs_lens_lenstronomy:
+#         kw_fixed = {}
+#         for key, value in kw.items():
+#             if hasattr(value, '__iter__') and not isinstance(value, str):
+#                 kw_fixed[key] = float(value)
+#             else:
+#                 kw_fixed[key] = float(value) if not isinstance(value, (int, float)) else value
+#         kwargs_lens_fixed.append(kw_fixed)
+
+#     # Solve — no source position scaling
+#     source_x_float = float(source_pos[0])
+#     source_y_float = float(source_pos[1])
+
+#     x_image_true, y_image_true = solver_lenstronomy.image_position_from_source(
+#         kwargs_lens=kwargs_lens_fixed,
+#         sourcePos_x=source_x_float,
+#         sourcePos_y=source_y_float,
+#         min_distance=solver_params.get('min_distance', 0.01),
+#         search_window=solver_params.get('search_window', 15),
+#         precision_limit=solver_params.get('precision_limit', 1e-10),
+#         num_iter_max=solver_params.get('num_iter_max', 1200),
+#         solver='lenstronomy'
+#     )
+
+#     x_image_true = jnp.array(x_image_true)
+#     y_image_true = jnp.array(y_image_true)
+
+#     return kwargs_lens, x_image_true, y_image_true, lens_mass_model
+
 def setup_lens_mst(lens_model_list, kwargs_lens, zl, zs, source_pos,
                    solver_params=None, kappa0=0.0):
     if solver_params is None:
         solver_params = SOLVER_PARAMS.copy()
 
     import copy
-    kwargs_lens = copy.deepcopy(kwargs_lens)
+    kwargs_lens_original = copy.deepcopy(kwargs_lens)
 
-    # ----------------------------------------------------------------
     # Herculens — MassModelMassSheet handles MST internally
-    # ----------------------------------------------------------------
     lens_mass_model = MassModelMassSheet(lens_model_list, kappa0=kappa0)
 
-    # ----------------------------------------------------------------
-    # Lenstronomy — just add CONVERGENCE, no scaling
-    # ----------------------------------------------------------------
+    # Lenstronomy — scale theta_E + add CONVERGENCE, no source scaling
+    kwargs_lens_lenstronomy = copy.deepcopy(kwargs_lens)
+
     if kappa0 != 0.0:
+        for kw in kwargs_lens_lenstronomy:
+            for param in ['theta_E', 'r_core', 'r_trunc', 'Rs', 'sigma0']:
+                if param in kw:
+                    kw[param] = kw[param] * (1 - kappa0)
+
         lens_model_list_lenstronomy = lens_model_list + ['CONVERGENCE']
-        kwargs_lens_lenstronomy     = kwargs_lens + [{'kappa': kappa0}]
+        kwargs_lens_lenstronomy     = kwargs_lens_lenstronomy + [{'kappa': kappa0}]
     else:
         lens_model_list_lenstronomy = lens_model_list
-        kwargs_lens_lenstronomy     = kwargs_lens
 
     lensModel = LensModel(
         lens_model_list=lens_model_list_lenstronomy,
@@ -132,7 +195,7 @@ def setup_lens_mst(lens_model_list, kwargs_lens, zl, zs, source_pos,
                 kw_fixed[key] = float(value) if not isinstance(value, (int, float)) else value
         kwargs_lens_fixed.append(kw_fixed)
 
-    # Solve — no source position scaling
+    # source position unchanged
     source_x_float = float(source_pos[0])
     source_y_float = float(source_pos[1])
 
@@ -150,7 +213,7 @@ def setup_lens_mst(lens_model_list, kwargs_lens, zl, zs, source_pos,
     x_image_true = jnp.array(x_image_true)
     y_image_true = jnp.array(y_image_true)
 
-    return kwargs_lens, x_image_true, y_image_true, lens_mass_model
+    return kwargs_lens_original, x_image_true, y_image_true, lens_mass_model
 
 def remove_central_image(thetas, betas, cx0, cy0):
     """Remove the central image (closest to lens center) from solver results.
