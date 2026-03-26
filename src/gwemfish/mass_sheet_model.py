@@ -29,5 +29,3 @@ class MassModelMassSheet(MassModel):
     def kappa(self, x, y, kwargs, k=None):
         return (1 - self.kappa0) * super().kappa(x, y, kwargs, k=k) + self.kappa0
 
-    def magnification(self, x, y, kwargs, k=None):
-        return super().magnification(x, y, kwargs, k=k) / (1 - self.kappa0)**2
