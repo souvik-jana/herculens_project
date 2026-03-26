@@ -26,6 +26,5 @@ class MassModelMassSheet(MassModel):
         f_xx, f_xy, f_yx, f_yy = super().hessian(x, y, kwargs, k=k)
         return (1 - self.kappa0) * f_xx + self.kappa0, (1 - self.kappa0) * f_xy, (1 - self.kappa0) * f_yx, (1 - self.kappa0) * f_yy + self.kappa0
 
-    def kappa(self, x, y, kwargs, k=None):
-        return (1 - self.kappa0) * super().kappa(x, y, kwargs, k=k) + self.kappa0
+    
 
