@@ -586,8 +586,8 @@ class ProbModel_GW_only(hcl.NumpyroModel):
             x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL)
 
         gw_obs       = self.gw_observations
-        sigma_td     = 0.005 * gw_obs['time_delays']
-        sigma_dL_eff = 0.05  * gw_obs['dL_eff']
+        sigma_td     = 0.05 * gw_obs['time_delays']
+        sigma_dL_eff = 0.02  * gw_obs['dL_eff']
         epsilon      = 0.001 * jnp.ones_like(betx_x_diff)
 
         numpyro.sample('tdelays_obs',
