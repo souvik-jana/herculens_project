@@ -32,7 +32,8 @@ env/
 Thumbs.db
 
 # Output folders
-**/outputs/
+**/outputs/*
+!**/outputs/*.dvc
 
 # Large data/binary file types
 *.json
