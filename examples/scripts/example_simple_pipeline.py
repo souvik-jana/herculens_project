@@ -17,7 +17,7 @@ IMAGE_PLANE_CORNER_PATH = "image_plane_corner_{group_name}.png"
 SOURCE_PLANE_CORNER_PATH = "source_plane_corner_{group_name}.png"
 SYSTEM_PLOT_PATH = "system_observation.png"
 PIPELINE_JSON_PATH = "pipeline_outputs.json"
-OUTPUT_DIR = "outputs"
+OUTPUT_DIR = "examples/outputs/outputs_example_simple_pipeline"
 METHOD = "HMC-informed"
 
 

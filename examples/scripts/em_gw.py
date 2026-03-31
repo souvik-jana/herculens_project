@@ -10,7 +10,7 @@ rule as inference: e.g. ``hmc_informed``, ``deriv_approx``).
 import os
 
 # Root folder for this run (all paths below are relative to this).
-OUTPUT_DIR = "output_silmarel"
+OUTPUT_DIR = "examples/outputs/outputs_em_gw"
 
 # Corner plot templates (saved under ``OUTPUT_DIR/<method_tag>/``; no extra filename tag needed).
 IMAGE_PLANE_CORNER_PATH = "image_plane_corner_{group_name}.png"
