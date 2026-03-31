@@ -6,7 +6,7 @@ Uses ``make_default_cfg()`` values from ``simple_pipeline`` except ``em.enabled=
 
 import os
 
-OUTPUT_DIR = "outputs_gw_only"
+OUTPUT_DIR = "examples/outputs/outputs_gw_only"
 
 IMAGE_PLANE_CORNER_PATH = "image_plane_corner_{group_name}.png"
 SOURCE_PLANE_CORNER_PATH = "source_plane_corner_{group_name}.png"

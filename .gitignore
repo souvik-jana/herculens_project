@@ -40,3 +40,6 @@ Thumbs.db
 *.txt
 *.pdf
 *.png
+*.pkl
+*.h5
+*.hdf5
