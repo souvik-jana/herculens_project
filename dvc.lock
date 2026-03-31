@@ -1,0 +1,20 @@
+schema: '2.0'
+stages:
+  gw_only:
+    cmd: uv run python examples/scripts/gw_only.py
+    deps:
+    - path: examples/scripts/gw_only.py
+      hash: md5
+      md5: 39fb66496e505320c82f5b46e28c237b
+      size: 6844
+    - path: src/gwemfish
+      hash: md5
+      md5: 29f6c4580e49eff4e063f70c72b32b98.dir
+      size: 405571
+      nfiles: 33
+    outs:
+    - path: examples/outputs/outputs_gw_only
+      hash: md5
+      md5: 2afa6869d140d77602e4a8414a936c0f.dir
+      size: 110382633
+      nfiles: 16

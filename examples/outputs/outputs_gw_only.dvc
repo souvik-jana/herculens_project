@@ -1,0 +1,6 @@
+outs:
+- md5: f6665b70950fd95d1a80ac6801de41da.dir
+  size: 110382633
+  nfiles: 16
+  hash: md5
+  path: outputs_gw_only

@@ -1,0 +1,8 @@
+stages:
+  gw_only:
+    cmd: uv run python examples/scripts/gw_only.py
+    deps:
+    - examples/scripts/gw_only.py
+    - src/gwemfish
+    outs:
+    - examples/outputs/outputs_gw_only
