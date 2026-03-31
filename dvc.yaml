@@ -6,3 +6,10 @@ stages:
     - src/gwemfish
     outs:
     - examples/outputs/outputs_gw_only
+  em_gw:
+    cmd: uv run python examples/scripts/em_gw.py
+    deps:
+    - examples/scripts/em_gw.py
+    - src/gwemfish
+    outs:
+    - examples/outputs/outputs_em_gw
