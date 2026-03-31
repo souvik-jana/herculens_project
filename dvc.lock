@@ -18,3 +18,21 @@ stages:
       md5: 2afa6869d140d77602e4a8414a936c0f.dir
       size: 110382633
       nfiles: 16
+  em_gw:
+    cmd: uv run python examples/scripts/em_gw.py
+    deps:
+    - path: examples/scripts/em_gw.py
+      hash: md5
+      md5: 2f56acf77a3e8d240adfde7b068c4759
+      size: 8548
+    - path: src/gwemfish
+      hash: md5
+      md5: 29f6c4580e49eff4e063f70c72b32b98.dir
+      size: 405571
+      nfiles: 33
+    outs:
+    - path: examples/outputs/outputs_em_gw
+      hash: md5
+      md5: 82568533ea21ce1875e73f184aed6803.dir
+      size: 94826976
+      nfiles: 19
