@@ -12,80 +12,17 @@ from .lens_setup import remove_central_image
 
 
 # ---------------------------------------------------------------------------
-# Module-level default prior registries
+# Default prior registries and default geometry
 # ---------------------------------------------------------------------------
 
-def _make_default_priors_em(pix_scl=0.4):
-    """Return the default prior registry for EM+GW models."""
-    return {
-        # GW
-        'T_star':          lambda: numpyro.sample('T_star',          dist.Uniform(1e4, 1e8)),
-        'dL':              lambda: numpyro.sample('dL',              dist.Uniform(10000.0, 21800.0)),
-        # Source light
-        'source_amp':      lambda: numpyro.sample('source_amp',      dist.TruncatedNormal(4.0, 1.0, low=2.4, high=10.0)),
-        'source_R_sersic': lambda: numpyro.sample('source_R_sersic', dist.TruncatedNormal(0.5, 0.4, low=0.05)),
-        'source_n':        lambda: numpyro.sample('source_n',        dist.Uniform(1., 2.5)),
-        'source_e1':       lambda: numpyro.sample('source_e1',       dist.TruncatedNormal(0.05, 0.06, low=-0.3, high=0.3)),
-        'source_e2':       lambda: numpyro.sample('source_e2',       dist.TruncatedNormal(0.05, 0.06, low=-0.3, high=0.3)),
-        # Source center — fixed by default, sample by overriding in priors=
-        'source_center_x': lambda: jnp.asarray(0.05),
-        'source_center_y': lambda: jnp.asarray(0.1),
-        # Lens light
-        'light_amp':       lambda: numpyro.sample('light_amp',       dist.TruncatedNormal(8, 2.0, low=0.0, high=9.5)),
-        'light_R_sersic':  lambda: numpyro.sample('light_R_sersic',  dist.TruncatedNormal(1.0, 0.5, low=0.88, high=1.15)),
-        'light_n':         lambda: numpyro.sample('light_n',         dist.Uniform(2.4, 5.)),
-        'light_e1':        lambda: numpyro.sample('light_e1',        dist.TruncatedNormal(0., 0.2, low=-0.3, high=0.3)),
-        'light_e2':        lambda: numpyro.sample('light_e2',        dist.TruncatedNormal(0., 0.2, low=-0.3, high=0.3)),
-        'light_center_x':  lambda: numpyro.sample('light_center_x',  dist.Normal(0., pix_scl / 2)),
-        'light_center_y':  lambda: numpyro.sample('light_center_y',  dist.Normal(0., pix_scl / 2)),
-        # Lens mass
-        'lens_theta_E':    lambda: numpyro.sample('lens_theta_E',    dist.Uniform(1.99, 2.01)),
-        'lens_e1':         lambda: numpyro.sample('lens_e1',         dist.Uniform(-0.065, -0.050)),
-        'lens_e2':         lambda: numpyro.sample('lens_e2',         dist.Uniform(0.075, 0.11)),
-        'lens_gamma':      lambda: numpyro.sample('lens_gamma',      dist.Uniform(1.95, 2.05)),
-        'lens_gamma1':     lambda: numpyro.sample('lens_gamma1',     dist.Uniform(-0.006, 0.005)),
-        'lens_gamma2':     lambda: numpyro.sample('lens_gamma2',     dist.Uniform(-0.005, 0.009)),
-        # Lens center — fixed by default, sample by overriding in priors=
-        'lens_center_x':   lambda: jnp.asarray(0.0),
-        'lens_center_y':   lambda: jnp.asarray(0.0),
-        # Noise
-        'noise_sigma_bkg': lambda: numpyro.sample('noise_sigma_bkg', dist.Uniform(low=0.008, high=0.012)),
-    }
-
-
-DEFAULT_PRIORS_EM = _make_default_priors_em()
-
-DEFAULT_PRIORS_GW_ONLY = {
-    'T_star':         lambda: numpyro.sample('T_star',         dist.Uniform(1e4, 1e8)),
-    'dL':             lambda: numpyro.sample('dL',             dist.Uniform(0.0, 61800.0)),
-    'lens_theta_E':   lambda: numpyro.sample('lens_theta_E',   dist.Uniform(0.1, 10.0)),
-    'lens_e1':        lambda: numpyro.sample('lens_e1',        dist.Uniform(-0.8, 0.8)),
-    'lens_e2':        lambda: numpyro.sample('lens_e2',        dist.Uniform(-0.8, 0.8)),
-    'lens_gamma':     lambda: numpyro.sample('lens_gamma',     dist.Uniform(1.1, 3.0)),
-    'lens_gamma1':    lambda: numpyro.sample('lens_gamma1',    dist.Uniform(-0.8, 0.8)),
-    'lens_gamma2':    lambda: numpyro.sample('lens_gamma2',    dist.Uniform(-0.8, 0.8)),
-    # Lens center — fixed by default
-    'lens_center_x':  lambda: jnp.asarray(0.0),
-    'lens_center_y':  lambda: jnp.asarray(0.0),
-}
-
-DEFAULT_IMAGE_POSITIONS_EM = {
-    'x_image_true': jnp.array([ 1.90461434, -1.63544685,  0.70943792, -1.14517025]),
-    'y_image_true': jnp.array([-0.90999308,  1.19344445,  1.80599259, -1.50457468]),
-    'delx':         jnp.array([0.2, 0.35, 0.49, 0.3]),
-    'dely':         jnp.array([0.4, 0.4,  0.35, 0.3]),
-}
-
-DEFAULT_IMAGE_POSITIONS_GW = {
-    'x_image_true': jnp.array([ 0.39264629,  0.51222365,  1.91141776, -1.72692207]),
-    'y_image_true': jnp.array([ 2.16216848, -1.97584213, -0.3096334,  -0.19729149]),
-    'delx':         jnp.array([20., 20., 20., 20.]),
-    'dely':         jnp.array([20., 20., 20., 20.]),
-    'minx': -20.,
-    'maxx':  20.,
-    'miny': -20.,
-    'maxy':  20.,
-}
+from .priors import (
+    _make_default_priors_em_gw,
+    DEFAULT_PRIORS_EM_GW,
+    DEFAULT_PRIORS_EM_ONLY,
+    DEFAULT_PRIORS_GW_ONLY,
+    DEFAULT_IMAGE_POSITION_PRIORS_EM,
+    DEFAULT_IMAGE_POSITION_PRIORS_GW,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -115,44 +52,40 @@ def _build_prior_lens(lens_theta_E, lens_e1, lens_e2, lens_gamma,
     ]
 
 
-def _sample_image_positions(n_images, priors, image_positions):
-    ip = image_positions
+def _sample_image_positions(n_images, priors, image_position_priors):
+    ip = image_position_priors
     x_list, y_list = [], []
     for i in range(n_images):
         xk, yk = f'image_x{i + 1}', f'image_y{i + 1}'
         if xk in priors:
             x = priors[xk]()
         else:
-            mean_x = ip['x_image_true'][i]
-            half_dx = ip['delx'][i] / 2
-            x = numpyro.sample(xk, dist.Uniform(mean_x - half_dx, mean_x + half_dx))
+            # Prefer per-image centered boxes if geometry provides them;
+            # otherwise fall back to a global (min/max) box.
+            if 'x_image_true' in ip and 'delx' in ip:
+                mean_x = ip['x_image_true'][i]
+                half_dx = ip['delx'][i] / 2
+                x = numpyro.sample(xk, dist.Uniform(mean_x - half_dx, mean_x + half_dx))
+            else:
+                x = numpyro.sample(xk, dist.Uniform(ip['minx'], ip['maxx']))
         if yk in priors:
             y = priors[yk]()
         else:
-            mean_y = ip['y_image_true'][i]
-            half_dy = ip['dely'][i] / 2
-            y = numpyro.sample(yk, dist.Uniform(mean_y - half_dy, mean_y + half_dy))
+            if 'y_image_true' in ip and 'dely' in ip:
+                mean_y = ip['y_image_true'][i]
+                half_dy = ip['dely'][i] / 2
+                y = numpyro.sample(yk, dist.Uniform(mean_y - half_dy, mean_y + half_dy))
+            else:
+                y = numpyro.sample(yk, dist.Uniform(ip['miny'], ip['maxy']))
         x_list.append(x)
         y_list.append(y)
     return jnp.array(x_list), jnp.array(y_list)
 
 
-def _sample_image_positions_flat(n_images, priors, image_positions):
-    ip = image_positions
-    x_list, y_list = [], []
-    for i in range(n_images):
-        xk, yk = f'image_x{i + 1}', f'image_y{i + 1}'
-        if xk in priors:
-            x = priors[xk]()
-        else:
-            x = numpyro.sample(xk, dist.Uniform(ip['minx'], ip['maxx']))
-        if yk in priors:
-            y = priors[yk]()
-        else:
-            y = numpyro.sample(yk, dist.Uniform(ip['miny'], ip['maxy']))
-        x_list.append(x)
-        y_list.append(y)
-    return jnp.array(x_list), jnp.array(y_list)
+# def _sample_image_positions_flat(n_images, priors, image_positions):
+#     # Backward-compatible wrapper.
+#     # Keep the name, but delegate to the unified implementation.
+#     return _sample_image_positions(n_images, priors, image_positions)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +97,8 @@ class ProbModel(hcl.NumpyroModel):
 
     def __init__(self, n_images=4, gw_observations=None, em_observations=None,
                  lens_image=None, lens_gw=None, noise=None,
-                 priors=None, image_positions=None):
+                 priors=None, image_position_priors=None, image_positions=None,
+                 gw_error_scales=None):
         """
         Args:
             n_images:        Number of lensed images.
@@ -176,7 +110,10 @@ class ProbModel(hcl.NumpyroModel):
             priors:          Optional dict of zero-arg callables overriding defaults.
                              All parameters including source_center_x/y and
                              lens_center_x/y can be sampled by passing lambdas here.
-            image_positions: Optional dict overriding image-position geometry.
+            image_position_priors: Optional dict overriding image-position prior geometry.
+            image_positions: Legacy alias for image_position_priors (kept for compatibility).
+            gw_error_scales: Optional dict scaling GW likelihood uncertainties.
+                             Keys: 'sigma_td', 'sigma_dL_eff', 'epsilon'.
         """
         self.n_images        = n_images
         self.gw_observations = gw_observations or {}
@@ -185,8 +122,19 @@ class ProbModel(hcl.NumpyroModel):
         self.lens_gw         = lens_gw
         self.noise           = noise
         self.pix_scl         = 0.4
-        self.priors          = {**_make_default_priors_em(self.pix_scl), **(priors or {})}
-        self.image_positions = {**DEFAULT_IMAGE_POSITIONS_EM, **(image_positions or {})}
+        self.priors          = {**_make_default_priors_em_gw(self.pix_scl), **(priors or {})}
+        if image_positions is not None and image_position_priors is None:
+            image_position_priors = image_positions
+        self.image_position_priors = {
+            **DEFAULT_IMAGE_POSITION_PRIORS_EM,
+            **(image_position_priors or {}),
+        }
+        self.gw_error_scales = {
+            "sigma_td": 0.05,
+            "sigma_dL_eff": 0.2,
+            "epsilon": 0.005,
+            **(gw_error_scales or {}),
+        }
         super().__init__()
 
     def model(self):
@@ -247,7 +195,7 @@ class ProbModel(hcl.NumpyroModel):
 
         # --- Image positions ---
         x_pos_array, y_pos_array = _sample_image_positions(
-            self.n_images, self.priors, self.image_positions)
+            self.n_images, self.priors, self.image_position_priors)
 
         # --- GW likelihood ---
         (_, model_time_delays, _, model_dL_eff,
@@ -255,9 +203,9 @@ class ProbModel(hcl.NumpyroModel):
             x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL)
 
         gw_obs       = self.gw_observations
-        sigma_td     = 0.05 * gw_obs['time_delays']
-        sigma_dL_eff = 0.2  * gw_obs['dL_eff']
-        epsilon      = 0.005 * jnp.ones_like(betx_x_diff)
+        sigma_td     = self.gw_error_scales["sigma_td"] * gw_obs['time_delays']
+        sigma_dL_eff = self.gw_error_scales["sigma_dL_eff"] * gw_obs['dL_eff']
+        epsilon      = self.gw_error_scales["epsilon"] * jnp.ones_like(betx_x_diff)
 
         numpyro.sample('tdelays_obs',
                        dist.Independent(dist.Normal(model_time_delays, sigma_td), 1),
@@ -325,7 +273,8 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
 
     def __init__(self, n_images=4, gw_observations=None, em_observations=None,
                  lens_image=None, lens_gw=None, noise=None,
-                 solver=None, solver_params=None, priors=None):
+                 solver=None, solver_params=None, priors=None,
+                 gw_error_scales=None):
         """
         Args:
             n_images:        Number of lensed images (excluding central image).
@@ -340,6 +289,8 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
                                'y0gw': lambda returning sampled y0gw scalar
                                'y1gw': lambda returning sampled y1gw scalar
                              Source/lens center keys also accepted.
+            gw_error_scales: Optional dict scaling GW likelihood uncertainties.
+                             Keys: 'sigma_td', 'sigma_dL_eff', 'epsilon'.
         """
         self.n_images        = n_images
         self.gw_observations = gw_observations or {}
@@ -355,8 +306,14 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
             'y0gw': lambda: numpyro.sample('y0gw', dist.Uniform(0.045, 0.055)),
             'y1gw': lambda: numpyro.sample('y1gw', dist.Uniform(9e-7,  2e-6)),
         }
-        base = {**_make_default_priors_em(self.pix_scl), **_source_plane_defaults}
+        base = {**_make_default_priors_em_gw(self.pix_scl), **_source_plane_defaults}
         self.priors = {**base, **(priors or {})}
+        self.gw_error_scales = {
+            "sigma_td": 0.3,
+            "sigma_dL_eff": 0.3,
+            "epsilon": 0.005,
+            **(gw_error_scales or {}),
+        }
         super().__init__()
 
     def model(self):
@@ -428,9 +385,9 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
             x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL)
 
         gw_obs       = self.gw_observations
-        sigma_td     = 0.3  * gw_obs['time_delays']
-        sigma_dL_eff = 0.3  * gw_obs['dL_eff']
-        epsilon      = 0.005 * jnp.ones_like(betx_x_diff)
+        sigma_td     = self.gw_error_scales["sigma_td"] * gw_obs['time_delays']
+        sigma_dL_eff = self.gw_error_scales["sigma_dL_eff"] * gw_obs['dL_eff']
+        epsilon      = self.gw_error_scales["epsilon"] * jnp.ones_like(betx_x_diff)
 
         numpyro.sample('tdelays_obs',
                        dist.Independent(dist.Normal(model_time_delays, sigma_td), 1),
@@ -494,24 +451,30 @@ class ProbModelFisher(hcl.NumpyroModel):
     """Probabilistic model with approximate likelihood from Fisher matrix."""
 
     def __init__(self, keys_to_include, approx_logp,
-                 priors=None, image_positions=None):
+                 priors=None, image_position_priors=None, image_positions=None):
         """
         Args:
             keys_to_include: Ordered list of parameter keys stacked into approx_logp vector.
             approx_logp:     Callable f(u: jnp.ndarray) -> scalar.
             priors:          Optional override dict.
-            image_positions: Optional image-position geometry override.
+            image_position_priors: Optional image-position prior geometry override.
+            image_positions: Legacy alias for image_position_priors (kept for compatibility).
         """
         self.keys_to_include = keys_to_include
         self.approx_logp     = approx_logp
         self.pix_scl         = 0.4
-        self.priors          = {**_make_default_priors_em(self.pix_scl), **(priors or {})}
-        self.image_positions = {**DEFAULT_IMAGE_POSITIONS_EM, **(image_positions or {})}
+        self.priors          = {**_make_default_priors_em_gw(self.pix_scl), **(priors or {})}
+        if image_positions is not None and image_position_priors is None:
+            image_position_priors = image_positions
+        self.image_position_priors = {
+            **DEFAULT_IMAGE_POSITION_PRIORS_EM,
+            **(image_position_priors or {}),
+        }
         super().__init__()
 
     def model(self):
         p  = self.priors
-        ip = self.image_positions
+        ip = self.image_position_priors
         param_dict = {}
 
         for key in self.keys_to_include:
@@ -519,14 +482,20 @@ class ProbModelFisher(hcl.NumpyroModel):
                 param_dict[key] = p[key]()
             elif key.startswith('image_x'):
                 i    = int(key[-1]) - 1
-                mean = ip['x_image_true'][i]
-                half = ip['delx'][i] / 2
-                param_dict[key] = numpyro.sample(key, dist.Uniform(mean - half, mean + half))
+                if 'x_image_true' in ip and 'delx' in ip:
+                    mean = ip['x_image_true'][i]
+                    half = ip['delx'][i] / 2
+                    param_dict[key] = numpyro.sample(key, dist.Uniform(mean - half, mean + half))
+                else:
+                    param_dict[key] = numpyro.sample(key, dist.Uniform(ip['minx'], ip['maxx']))
             elif key.startswith('image_y'):
                 i    = int(key[-1]) - 1
-                mean = ip['y_image_true'][i]
-                half = ip['dely'][i] / 2
-                param_dict[key] = numpyro.sample(key, dist.Uniform(mean - half, mean + half))
+                if 'y_image_true' in ip and 'dely' in ip:
+                    mean = ip['y_image_true'][i]
+                    half = ip['dely'][i] / 2
+                    param_dict[key] = numpyro.sample(key, dist.Uniform(mean - half, mean + half))
+                else:
+                    param_dict[key] = numpyro.sample(key, dist.Uniform(ip['miny'], ip['maxy']))
             else:
                 raise ValueError(
                     f"Parameter '{key}' in keys_to_include is not recognised. "
@@ -537,6 +506,81 @@ class ProbModelFisher(hcl.NumpyroModel):
 
 
 # ---------------------------------------------------------------------------
+# ProbModel_EM_only (EM only, image-plane likelihood)
+# ---------------------------------------------------------------------------
+class ProbModel_EM_only(hcl.NumpyroModel):
+    """EM-only probabilistic model (no GW likelihood)."""
+
+    def __init__(self, em_observations=None, lens_image=None, noise=None,
+                 priors=None):
+        """
+        Args:
+            em_observations: Dict with 'data' key containing the EM observation.
+            lens_image: hcl.LensImage instance configured for inference.
+            noise: hcl.Noise instance configured for inference (background_rms=None).
+            priors: Optional override dict. Expected to follow the numpyro-style
+                    priors registry used in this module (zero-arg callables).
+        """
+        self.em_observations = em_observations or {}
+        self.lens_image = lens_image
+        self.noise = noise
+        self.pix_scl = 0.4
+        self.priors = {**DEFAULT_PRIORS_EM_ONLY, **(priors or {})}
+        super().__init__()
+
+    def model(self):
+        p = self.priors
+
+        sigma_bkg = p["noise_sigma_bkg"]()
+
+        prior_source = [{
+            "amp": p["source_amp"](),
+            "R_sersic": p["source_R_sersic"](),
+            "n_sersic": p["source_n"](),
+            "e1": p["source_e1"](),
+            "e2": p["source_e2"](),
+            "center_x": p["source_center_x"](),
+            "center_y": p["source_center_y"](),
+        }]
+
+        prior_lens_light = [{
+            "amp": p["light_amp"](),
+            "R_sersic": p["light_R_sersic"](),
+            "n_sersic": p["light_n"](),
+            "e1": p["light_e1"](),
+            "e2": p["light_e2"](),
+            "center_x": p["light_center_x"](),
+            "center_y": p["light_center_y"](),
+        }]
+
+        prior_lens = _build_prior_lens(
+            lens_theta_E=p["lens_theta_E"](),
+            lens_e1=p["lens_e1"](),
+            lens_e2=p["lens_e2"](),
+            lens_gamma=p["lens_gamma"](),
+            lens_center_x=p["lens_center_x"](),
+            lens_center_y=p["lens_center_y"](),
+            gamma1=p["lens_gamma1"](),
+            gamma2=p["lens_gamma2"](),
+        )
+
+        # Build predicted image.
+        model_image = self.lens_image.model(
+            kwargs_lens=prior_lens,
+            kwargs_lens_light=prior_lens_light,
+            kwargs_source=prior_source,
+        )
+
+        em_data = self.em_observations["data"]
+        model_var = self.noise.C_D_model(model_image, background_rms=sigma_bkg)
+        numpyro.sample(
+            "obs",
+            dist.Independent(dist.Normal(model_image, jnp.sqrt(model_var)), 2),
+            obs=em_data,
+        )
+
+
+# ---------------------------------------------------------------------------
 # ProbModel_GW_only  (GW only, image-plane positions)
 # ---------------------------------------------------------------------------
 
@@ -544,21 +588,36 @@ class ProbModel_GW_only(hcl.NumpyroModel):
     """GW-only probabilistic model (no EM likelihood)."""
 
     def __init__(self, n_images=4, gw_observations=None, lens_gw=None,
-                 priors=None, image_positions=None):
+                 priors=None, image_position_priors=None, image_positions=None,
+                 gw_error_scales=None):
         """
         Args:
             n_images:        Number of lensed images.
             gw_observations: Dict with 'time_delays' and 'dL_eff'.
             lens_gw:         LensImageGW instance.
             priors:          Optional override dict from DEFAULT_PRIORS_GW_ONLY.
-            image_positions: Optional image-position geometry override.
+            image_position_priors: Optional image-position prior geometry override.
+            image_positions: Legacy alias for image_position_priors (kept for compatibility).
+            gw_error_scales: Optional dict scaling GW likelihood uncertainties.
+                             Keys: 'sigma_td', 'sigma_dL_eff', 'epsilon'.
         """
         self.n_images        = n_images
         self.gw_observations = gw_observations or {}
         self.lens_gw         = lens_gw
         self.pix_scl         = 0.4
         self.priors          = {**DEFAULT_PRIORS_GW_ONLY, **(priors or {})}
-        self.image_positions = {**DEFAULT_IMAGE_POSITIONS_GW, **(image_positions or {})}
+        if image_positions is not None and image_position_priors is None:
+            image_position_priors = image_positions
+        self.image_position_priors = {
+            **DEFAULT_IMAGE_POSITION_PRIORS_GW,
+            **(image_position_priors or {}),
+        }
+        self.gw_error_scales = {
+            "sigma_td": 0.05,
+            "sigma_dL_eff": 0.02,
+            "epsilon": 0.001,
+            **(gw_error_scales or {}),
+        }
         super().__init__()
 
     def model(self):
@@ -578,17 +637,17 @@ class ProbModel_GW_only(hcl.NumpyroModel):
             gamma2        = p['lens_gamma2'](),
         )
 
-        x_pos_array, y_pos_array = _sample_image_positions_flat(
-            self.n_images, self.priors, self.image_positions)
+        x_pos_array, y_pos_array = _sample_image_positions(
+            self.n_images, self.priors, self.image_position_priors)
 
         (_, model_time_delays, _, model_dL_eff,
          _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
             x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL)
 
         gw_obs       = self.gw_observations
-        sigma_td     = 0.05 * gw_obs['time_delays']
-        sigma_dL_eff = 0.02  * gw_obs['dL_eff']
-        epsilon      = 0.001 * jnp.ones_like(betx_x_diff)
+        sigma_td     = self.gw_error_scales["sigma_td"] * gw_obs['time_delays']
+        sigma_dL_eff = self.gw_error_scales["sigma_dL_eff"] * gw_obs['dL_eff']
+        epsilon      = self.gw_error_scales["epsilon"] * jnp.ones_like(betx_x_diff)
 
         numpyro.sample('tdelays_obs',
                        dist.Independent(dist.Normal(model_time_delays, sigma_td), 1),
@@ -612,33 +671,52 @@ class ProbModelFisher_GW_only(hcl.NumpyroModel):
     """GW-only probabilistic model with approximate Fisher likelihood."""
 
     def __init__(self, keys_to_include, approx_logp,
-                 priors=None, image_positions=None):
+                 priors=None, image_position_priors=None, image_positions=None):
         """
         Args:
             keys_to_include: Ordered list of parameter keys.
             approx_logp:     Callable f(u: jnp.ndarray) -> scalar.
             priors:          Optional override dict from DEFAULT_PRIORS_GW_ONLY.
-            image_positions: Optional image-position geometry override.
+            image_position_priors: Optional image-position prior geometry override.
+            image_positions: Legacy alias for image_position_priors (kept for compatibility).
         """
         self.keys_to_include = keys_to_include
         self.approx_logp     = approx_logp
         self.pix_scl         = 0.4
         self.priors          = {**DEFAULT_PRIORS_GW_ONLY, **(priors or {})}
-        self.image_positions = {**DEFAULT_IMAGE_POSITIONS_GW, **(image_positions or {})}
+        if image_positions is not None and image_position_priors is None:
+            image_position_priors = image_positions
+        self.image_position_priors = {
+            **DEFAULT_IMAGE_POSITION_PRIORS_GW,
+            **(image_position_priors or {}),
+        }
         super().__init__()
 
     def model(self):
         p  = self.priors
-        ip = self.image_positions
+        ip = self.image_position_priors
         param_dict = {}
 
         for key in self.keys_to_include:
             if key in p:
                 param_dict[key] = p[key]()
             elif key.startswith('image_x'):
-                param_dict[key] = numpyro.sample(key, dist.Uniform(ip['minx'], ip['maxx']))
+                # Per-image centered box fallback if available; otherwise global min/max.
+                i = int(key[-1]) - 1
+                if 'x_image_true' in ip and 'delx' in ip:
+                    mean_x = ip['x_image_true'][i]
+                    half_dx = ip['delx'][i] / 2
+                    param_dict[key] = numpyro.sample(key, dist.Uniform(mean_x - half_dx, mean_x + half_dx))
+                else:
+                    param_dict[key] = numpyro.sample(key, dist.Uniform(ip['minx'], ip['maxx']))
             elif key.startswith('image_y'):
-                param_dict[key] = numpyro.sample(key, dist.Uniform(ip['miny'], ip['maxy']))
+                i = int(key[-1]) - 1
+                if 'y_image_true' in ip and 'dely' in ip:
+                    mean_y = ip['y_image_true'][i]
+                    half_dy = ip['dely'][i] / 2
+                    param_dict[key] = numpyro.sample(key, dist.Uniform(mean_y - half_dy, mean_y + half_dy))
+                else:
+                    param_dict[key] = numpyro.sample(key, dist.Uniform(ip['miny'], ip['maxy']))
             else:
                 raise ValueError(
                     f"Parameter '{key}' in keys_to_include is not recognised. "

@@ -14,7 +14,7 @@ from .data_sim import (
     compute_gw_from_images
 )
 # from .prob_model_PL import ProbModel, ProbModelSourcePlane, ProbModelFisher, ProbModel_EM_GW
-from .prob_model import ProbModel, ProbModelSourcePlane, ProbModelFisher
+from .prob_model import ProbModel, ProbModelSourcePlane, ProbModelFisher, ProbModel_EM_only
 from .inference import run_mcmc
 from .fisher import compute_fisher
 from .config import (
@@ -38,6 +38,18 @@ from .config import (
     DEFAULT_KWARGS_NUMERICS,
     DEFAULT_SOURCE_LIGHT_MODEL,
     DEFAULT_LENS_LIGHT_MODEL,
+)
+
+# Ultra-simple default-driven pipeline
+from .simple_pipeline import (
+    setup_em_observation,
+    setup_gw_observation,
+    run_inference,
+    plot_posterior,
+    plot_system_observation,
+    to_source_plane_samples,
+    plot_source_posterior,
+    make_default_cfg,
 )
 
 __all__ = [
@@ -76,5 +88,16 @@ __all__ = [
     'DEFAULT_KWARGS_NUMERICS',
     'DEFAULT_SOURCE_LIGHT_MODEL',
     'DEFAULT_LENS_LIGHT_MODEL',
+    # Simple pipeline
+    'setup_em_observation',
+    'setup_gw_observation',
+    'run_inference',
+    'plot_posterior',
+    'plot_system_observation',
+    'to_source_plane_samples',
+    'plot_source_posterior',
+    'make_default_cfg',
+    # EM-only model
+    'ProbModel_EM_only',
 ]
 

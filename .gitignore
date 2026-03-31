@@ -30,3 +30,12 @@ env/
 # OS generated files
 .Trash-*
 Thumbs.db
+
+# Output folders
+**/outputs/
+
+# Large data/binary file types
+*.json
+*.txt
+*.pdf
+*.png
