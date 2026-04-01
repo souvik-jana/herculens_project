@@ -1149,3 +1149,317 @@ def plot_system_observation(
         fig.savefig(save_path, bbox_inches="tight", dpi=300)
     return fig
 
+
+def plot_lens_system_with_source_localization(
+    source_samples: Dict[str, Any],
+    kwargs_lens: Any,
+    lens_model_list: Any,
+    z_lens: float,
+    z_source: float,
+    truths_source: Optional[Dict[str, float]] = None,
+    *,
+    level: float = 0.90,
+    figsize: Tuple[float, float] = (10, 5),
+    cmap_string: str = "RdPu",
+    numPix: int = 600,
+    deltaPix: float = 0.01,
+    point_source: bool = True,
+    with_caustics: bool = True,
+    fast_caustic: bool = True,
+    coord_inverse: bool = False,
+    contour_color: str = "cyan",
+    contour_linestyle: str = "-",
+    contour_linewidth: float = 2.0,
+    scatter_alpha: float = 0.08,
+    scatter_size: float = 2.0,
+    truth_color: str = "k",
+    save_path: Optional[str] = None,
+) -> Any:
+    """Plot lenstronomy lens map and overlay one source-localization contour.
+
+    This is a generic helper for tutorials/notebooks: it overlays a highest
+    posterior density contour (default 90%) from one source posterior sample set
+    (`y0gw`, `y1gw`) on top of a lenstronomy caustic plot.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.stats import gaussian_kde
+    from lenstronomy.Plots import lens_plot
+    from lenstronomy.LensModel.lens_model import LensModel as LenstronomyLensModel
+
+    if "y0gw" not in source_samples or "y1gw" not in source_samples:
+        raise ValueError("source_samples must include 'y0gw' and 'y1gw'.")
+    if not (0.0 < level < 1.0):
+        raise ValueError("level must be in (0, 1), e.g. 0.90.")
+
+    x = np.asarray(source_samples["y0gw"]).ravel()
+    y = np.asarray(source_samples["y1gw"]).ravel()
+    if x.size < 10 or y.size < 10:
+        raise ValueError("Need enough y0gw/y1gw samples to estimate contour.")
+
+    lens_model_plot = LenstronomyLensModel(
+        lens_model_list,
+        z_lens=float(z_lens),
+        z_source=float(z_source),
+    )
+
+    fig, ax = plt.subplots(figsize=figsize)
+    lens_plot.lens_model_plot(
+        ax,
+        lensModel=lens_model_plot,
+        kwargs_lens=kwargs_lens,
+        sourcePos_x=float(np.mean(x)),
+        sourcePos_y=float(np.mean(y)),
+        point_source=point_source,
+        with_caustics=with_caustics,
+        fast_caustic=fast_caustic,
+        coord_inverse=coord_inverse,
+        numPix=numPix,
+        deltaPix=deltaPix,
+        cmap_string=cmap_string,
+    )
+
+    for obj in list(ax.get_images()) + list(ax.collections):
+        if hasattr(obj, "set_cmap"):
+            obj.set_cmap(cmap_string)
+
+    vals = np.vstack([x, y])
+    kde = gaussian_kde(vals)
+
+    xmin, xmax = np.min(x), np.max(x)
+    ymin, ymax = np.min(y), np.max(y)
+    padx = 0.15 * (xmax - xmin + 1e-12)
+    pady = 0.15 * (ymax - ymin + 1e-12)
+
+    xi = np.linspace(xmin - padx, xmax + padx, 220)
+    yi = np.linspace(ymin - pady, ymax + pady, 220)
+    X, Y = np.meshgrid(xi, yi)
+    Z = kde(np.vstack([X.ravel(), Y.ravel()])).reshape(X.shape)
+
+    z = Z.ravel()
+    order = np.argsort(z)[::-1]
+    z_sorted = z[order]
+    cdf = np.cumsum(z_sorted)
+    cdf /= cdf[-1]
+    z_level = z_sorted[np.searchsorted(cdf, level)]
+
+    ax.scatter(x, y, s=scatter_size, alpha=scatter_alpha, color=contour_color)
+    ax.contour(
+        X,
+        Y,
+        Z,
+        levels=[z_level],
+        colors=[contour_color],
+        linewidths=contour_linewidth,
+        linestyles=[contour_linestyle],
+    )
+    ax.scatter([np.mean(x)], [np.mean(y)], s=40, color=contour_color, marker="o", label="Posterior mean")
+
+    if truths_source is not None and "y0gw" in truths_source and "y1gw" in truths_source:
+        ax.scatter(
+            [float(truths_source["y0gw"])],
+            [float(truths_source["y1gw"])],
+            s=70,
+            color=truth_color,
+            marker="x",
+            label="True source",
+        )
+
+    ax.set_xlabel("y0gw [arcsec]")
+    ax.set_ylabel("y1gw [arcsec]")
+    ax.set_title(f"Lens system with {int(level * 100)}% source-localization contour")
+    ax.set_aspect("equal", adjustable="box")
+    ax.legend(loc="best", fontsize=9)
+    fig.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    return fig, ax
+
+
+def plot_lens_system_with_source_local_setup(
+    source_samples: Dict[str, Any],
+    ctx: Dict[str, Any],
+    truths_source: Optional[Dict[str, float]] = None,
+    **kwargs: Any,
+) -> Any:
+    """Convenience wrapper using lens config directly from pipeline context.
+
+    Reads ``kwargs_lens``, ``lens_model_list``, ``zl``, and ``zs`` from ``ctx`` and
+    forwards all plotting options to ``plot_lens_system_with_source_localization``.
+    """
+    if "kwargs_lens" not in ctx:
+        raise ValueError("ctx must include 'kwargs_lens'. Run setup_em_observation(...) first.")
+    if "cfg" not in ctx or "lens" not in ctx["cfg"]:
+        raise ValueError("ctx must include cfg['lens'] with lens_model_list/zl/zs.")
+
+    lens_cfg = ctx["cfg"]["lens"]
+    lens_model_list = lens_cfg.get("lens_model_list")
+    z_lens = lens_cfg.get("zl")
+    z_source = lens_cfg.get("zs")
+    if lens_model_list is None or z_lens is None or z_source is None:
+        raise ValueError("ctx['cfg']['lens'] must contain 'lens_model_list', 'zl', and 'zs'.")
+
+    truths_source_use = truths_source
+    if truths_source_use is None:
+        gw_cfg = ((ctx.get("cfg") or {}).get("gw") or {})
+        src = gw_cfg.get("source_pos")
+        if isinstance(src, (list, tuple)) and len(src) >= 2:
+            truths_source_use = {"y0gw": float(src[0]), "y1gw": float(src[1])}
+
+    return plot_lens_system_with_source_localization(
+        source_samples=source_samples,
+        kwargs_lens=ctx["kwargs_lens"],
+        lens_model_list=lens_model_list,
+        z_lens=float(z_lens),
+        z_source=float(z_source),
+        truths_source=truths_source_use,
+        **kwargs,
+    )
+
+
+def plot_source_plane_caustic_with_localization(
+    source_samples: Dict[str, Any],
+    kwargs_lens: Any,
+    lens_model_list: Any,
+    z_lens: float,
+    z_source: float,
+    truths_source: Optional[Dict[str, float]] = None,
+    *,
+    level: float = 0.90,
+    figsize: Tuple[float, float] = (6, 6),
+    contour_color: str = "tab:blue",
+    caustic_color: str = "k",
+    caustic_linewidth: float = 1.5,
+    scatter_alpha: float = 0.08,
+    scatter_size: float = 2.0,
+    truth_color: str = "red",
+    show_scatter: bool = True,
+    show_posterior_mean: bool = True,
+    show_truth: bool = True,
+    save_path: Optional[str] = None,
+    compute_window: float = 5.0,
+    grid_scale: float = 0.01,
+    center_x: float = 0.0,
+    center_y: float = 0.0,
+) -> Any:
+    """Plot source-plane caustic(s) and one localization contour only.
+
+    This helper intentionally does NOT draw critical curves or image-plane maps.
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.stats import gaussian_kde
+    from lenstronomy.LensModel.lens_model import LensModel as LenstronomyLensModel
+    from lenstronomy.LensModel.lens_model_extensions import LensModelExtensions
+
+    if "y0gw" not in source_samples or "y1gw" not in source_samples:
+        raise ValueError("source_samples must include 'y0gw' and 'y1gw'.")
+    if not (0.0 < level < 1.0):
+        raise ValueError("level must be in (0, 1), e.g. 0.90.")
+
+    x = np.asarray(source_samples["y0gw"]).ravel()
+    y = np.asarray(source_samples["y1gw"]).ravel()
+    if x.size < 10 or y.size < 10:
+        raise ValueError("Need enough y0gw/y1gw samples to estimate contour.")
+
+    lens_model = LenstronomyLensModel(
+        lens_model_list,
+        z_lens=float(z_lens),
+        z_source=float(z_source),
+    )
+    ext = LensModelExtensions(lensModel=lens_model)
+    (_ra_crit, _dec_crit, ra_caustic, dec_caustic) = ext.critical_curve_caustics(
+        kwargs_lens=kwargs_lens,
+        compute_window=compute_window,
+        grid_scale=grid_scale,
+        center_x=center_x,
+        center_y=center_y,
+    )
+
+    vals = np.vstack([x, y])
+    kde = gaussian_kde(vals)
+    xmin, xmax = np.min(x), np.max(x)
+    ymin, ymax = np.min(y), np.max(y)
+    padx = 0.15 * (xmax - xmin + 1e-12)
+    pady = 0.15 * (ymax - ymin + 1e-12)
+    xi = np.linspace(xmin - padx, xmax + padx, 220)
+    yi = np.linspace(ymin - pady, ymax + pady, 220)
+    X, Y = np.meshgrid(xi, yi)
+    Z = kde(np.vstack([X.ravel(), Y.ravel()])).reshape(X.shape)
+
+    z = Z.ravel()
+    order = np.argsort(z)[::-1]
+    z_sorted = z[order]
+    cdf = np.cumsum(z_sorted)
+    cdf /= cdf[-1]
+    z_level = z_sorted[np.searchsorted(cdf, level)]
+
+    fig, ax = plt.subplots(figsize=figsize)
+    for xc, yc in zip(ra_caustic, dec_caustic):
+        ax.plot(np.asarray(xc), np.asarray(yc), color=caustic_color, lw=caustic_linewidth)
+
+    if show_scatter:
+        ax.scatter(x, y, s=scatter_size, alpha=scatter_alpha, color=contour_color)
+    ax.contour(X, Y, Z, levels=[z_level], colors=[contour_color], linewidths=2.0, linestyles=["-"])
+    if show_posterior_mean:
+        ax.scatter([np.mean(x)], [np.mean(y)], s=40, color=contour_color, marker="o", label="Posterior mean")
+
+    if show_truth and truths_source is not None and "y0gw" in truths_source and "y1gw" in truths_source:
+        ax.scatter(
+            [float(truths_source["y0gw"])],
+            [float(truths_source["y1gw"])],
+            s=70,
+            color=truth_color,
+            marker="x",
+            label="True source",
+        )
+
+    ax.set_xlabel("y0gw [arcsec]")
+    ax.set_ylabel("y1gw [arcsec]")
+    ax.set_title(f"Source-plane caustic with {int(level * 100)}% localization contour")
+    ax.set_aspect("equal", adjustable="box")
+    if show_posterior_mean or (show_truth and truths_source is not None):
+        ax.legend(loc="best", fontsize=9)
+    fig.tight_layout()
+    if save_path:
+        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    return fig, ax
+
+
+def plot_source_plane_caustic_with_localization_from_setup(
+    source_samples: Dict[str, Any],
+    ctx: Dict[str, Any],
+    truths_source: Optional[Dict[str, float]] = None,
+    **kwargs: Any,
+) -> Any:
+    """Convenience wrapper for source-plane-caustic plot using setup context."""
+    if "kwargs_lens" not in ctx:
+        raise ValueError("ctx must include 'kwargs_lens'. Run setup_em_observation(...) first.")
+    if "cfg" not in ctx or "lens" not in ctx["cfg"]:
+        raise ValueError("ctx must include cfg['lens'] with lens_model_list/zl/zs.")
+
+    lens_cfg = ctx["cfg"]["lens"]
+    lens_model_list = lens_cfg.get("lens_model_list")
+    z_lens = lens_cfg.get("zl")
+    z_source = lens_cfg.get("zs")
+    if lens_model_list is None or z_lens is None or z_source is None:
+        raise ValueError("ctx['cfg']['lens'] must contain 'lens_model_list', 'zl', and 'zs'.")
+
+    truths_source_use = truths_source
+    if truths_source_use is None:
+        gw_cfg = ((ctx.get("cfg") or {}).get("gw") or {})
+        src = gw_cfg.get("source_pos")
+        if isinstance(src, (list, tuple)) and len(src) >= 2:
+            truths_source_use = {"y0gw": float(src[0]), "y1gw": float(src[1])}
+
+    return plot_source_plane_caustic_with_localization(
+        source_samples=source_samples,
+        kwargs_lens=ctx["kwargs_lens"],
+        lens_model_list=lens_model_list,
+        z_lens=float(z_lens),
+        z_source=float(z_source),
+        truths_source=truths_source_use,
+        **kwargs,
+    )
+

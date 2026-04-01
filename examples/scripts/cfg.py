@@ -102,8 +102,13 @@ CFG = {
         "num_chains": 2,
         "max_tree_depth": 10,
         "dense_mass": True,
+        # Informed NUTS toggle for method='hmc' or method='deriv-approx' (banana model).
+        # For method='hmc-informed', informed NUTS is always used.
+        "informed": None,
         "hmc_informed_scale": 1.0,
         "hmc_informed_perturb_scale": 0.1,
+        # Optional custom Hessian for informed NUTS; None uses Fisher H0 from compute_fisher.
+        "H0": None,
         "n_fisher_samples": 5000,
         "fisher_order": 2,
         "rng_key": 123,
@@ -117,10 +122,13 @@ CFG = {
         "title_kwargs": {"fontsize": 10},
         "title_fmt": ".3f",
         "quantiles": [0.05, 0.5, 0.975],
+        "hist_kwargs": {"density": True},
         "params_to_plot": None,
         "figsize": None,
         # Use {group_name} for groupwise separate files.
         "save_path": None,
+        # Optional suffix tag appended before extension.
+        "save_tag": None,
     },
     "source_plane": {
         "n_images": 4,
@@ -136,6 +144,8 @@ CFG = {
         "save_source_samples_path": None,
         "save_system_plot_path": None,
         "json_path": None,
+        # Optional suffix tag appended to json_path.
+        "json_tag": None,
     },
 }
 

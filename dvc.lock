@@ -9,13 +9,13 @@ stages:
       size: 6844
     - path: src/gwemfish
       hash: md5
-      md5: 29f6c4580e49eff4e063f70c72b32b98.dir
-      size: 405571
+      md5: cbe1e7c9b722116f3f8a5680df17f5b9.dir
+      size: 405647
       nfiles: 33
     outs:
     - path: examples/outputs/outputs_gw_only
       hash: md5
-      md5: 2afa6869d140d77602e4a8414a936c0f.dir
+      md5: dae875979314726e50eb35b6f8a03219.dir
       size: 110382633
       nfiles: 16
   em_gw:
@@ -23,16 +23,16 @@ stages:
     deps:
     - path: examples/scripts/em_gw.py
       hash: md5
-      md5: 2f56acf77a3e8d240adfde7b068c4759
-      size: 8548
+      md5: d620cbcd891feaa2fe6bfae34598889d
+      size: 10096
     - path: src/gwemfish
       hash: md5
-      md5: 29f6c4580e49eff4e063f70c72b32b98.dir
-      size: 405571
+      md5: f9c38f66fe58e472ccf46adfa95de621.dir
+      size: 431642
       nfiles: 33
     outs:
     - path: examples/outputs/outputs_em_gw
       hash: md5
-      md5: 82568533ea21ce1875e73f184aed6803.dir
-      size: 94826976
-      nfiles: 19
+      md5: 6e64e1a5146fcbcf3c0286ff298c2066.dir
+      size: 71194966
+      nfiles: 23

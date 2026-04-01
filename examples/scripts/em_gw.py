@@ -24,8 +24,8 @@ PIPELINE_JSON_BASE = "pipeline_outputs.json"
 COMPARISON_IMAGE_CORNER_PATH = os.path.join(OUTPUT_DIR, "comparison_image_plane_{group_name}.png")
 COMPARISON_SOURCE_CORNER_PATH = os.path.join(OUTPUT_DIR, "comparison_source_plane_{group_name}.png")
 
-METHODS = ("hmc-informed", "deriv-approx")
-
+# METHODS = ("hmc-informed", "deriv-approx")
+METHODS = ("deriv-approx","fisher")
 
 def _method_tag_dir(method: str) -> str:
     """Folder name under ``OUTPUT_DIR`` for this inference method (matches JSON tag rule)."""
@@ -54,6 +54,7 @@ from gwemfish import (
     setup_gw_observation,
     run_inference,
     plot_system_observation,
+    plot_source_plane_caustic_with_localization_from_setup,
     plot_posterior,
     to_source_plane_samples,
     plot_source_posterior,
@@ -121,11 +122,11 @@ cfg = {
         "image_box_half_width": 0.6,
         "error_scales": {
             "sigma_td": 0.05,
-            "sigma_dL_eff": 0.2,
+            "sigma_dL_eff": 3.0,
             "epsilon": 0.005,
         },
     },
-    "plot": {"plot_mode": "groupwise", "save_path": None, "save_tag": None},
+    "plot": {"plot_mode": "groupwise", "save_path": None, "save_tag": None, "hist_kwargs": {"density": True}},
     "source_plane": {"filter_std": None, "use_filtered": False},
     "output": {
         "output_dir": OUTPUT_DIR,
@@ -227,6 +228,46 @@ for method in METHODS:
             },
         },
     )
+    # Custom source-plane corner (same params for each method).
+    custom_params = [
+        "source_center_x",
+        "source_center_y",
+        "source_R_sersic",
+        "lens_theta_E",
+        "lens_gamma",
+        "y0gw",
+        "y1gw",
+    ]
+    truths_custom = {
+        "source_center_x": float(tp["source_center_x"]),
+        "source_center_y": float(tp["source_center_y"]),
+        "source_R_sersic": float(tp["source_R_sersic"]),
+        "lens_theta_E": float(tp["lens_theta_E"]),
+        "lens_gamma": float(tp["lens_gamma"]),
+        "y0gw": float(ctx["cfg"]["gw"]["source_pos"][0]),
+        "y1gw": float(ctx["cfg"]["gw"]["source_pos"][1]),
+    }
+    plot_source_posterior(
+        source_out,
+        truths=truths_custom,
+        cfg={
+            "output": {"output_dir": corner_dir},
+            "plot": {
+                "plot_mode": "subset",
+                "params_to_plot": custom_params,
+                "save_path": "source_plane_corner_custom_params.png",
+            },
+        },
+    )
+    plot_source_plane_caustic_with_localization_from_setup(
+        source_samples=source_out["source_plane_samples_plot"],
+        ctx=ctx,
+        level=0.90,
+        show_scatter=False,
+        show_posterior_mean=False,
+        show_truth=True,
+        save_path=os.path.join(corner_dir, "source_localization_90.pdf"),
+    )
     source_by_method[method] = source_out["source_plane_samples_plot"]
 
 # Overlay image-plane and source-plane posteriors for the two methods (one figure per group).
@@ -254,6 +295,7 @@ plot_comparison_corner(
     param_groups_img,
     labels=(m0, m1),
     truths_dict=truths_dict_img,
+    hist_kwargs={"density": True},
     save_path=COMPARISON_IMAGE_CORNER_PATH,
 )
 
@@ -273,7 +315,9 @@ plot_comparison_corner(
     param_groups_sp,
     labels=(m0, m1),
     truths_dict=truths_dict_sp,
+    hist_kwargs={"density": True},
     save_path=COMPARISON_SOURCE_CORNER_PATH,
 )
+
 
 print(f"\nDone. Outputs under {os.path.abspath(OUTPUT_DIR)}/")

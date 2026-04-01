@@ -71,12 +71,14 @@ DEFAULT_LENS_MODEL_LIST = ['EPL', 'SHEAR']
 def DEFAULT_SOURCE_LIGHT_MODEL():
     """Return default source light model instance."""
     import herculens as hcl
-    return hcl.LightModel([hcl.SersicElliptic()])
+    # return hcl.LightModel([hcl.SersicElliptic()])
+    return hcl.LightModel([hcl.Sersic()])
 
 def DEFAULT_LENS_LIGHT_MODEL():
     """Return default lens light model instance."""
     import herculens as hcl
-    return hcl.LightModel([hcl.SersicElliptic()])
+    # return hcl.LightModel([hcl.SersicElliptic()])
+    return hcl.LightModel([hcl.Sersic()])
 
 # Default lens kwargs (EPL + SHEAR)
 # Note: e1, e2 computed from phi=60°, q=0.8

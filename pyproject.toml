@@ -24,7 +24,7 @@ dependencies = [
     "scienceplots",
     "scipy",
     "utax",
-    "herculens @ git+https://github.com/austinpeel/herculens.git@c8a061d0a982397356b9f2e1864bc09a8fd58349",
+    "herculens @ git+https://github.com/Herculens/herculens.git@27acb009ba622e614beb7a674298669e621d546d",
     "utax @ git+https://github.com/aymgal/utax.git",
     "helens @ git+https://github.com/Herculens/helens",
     "arviz",
