@@ -305,14 +305,14 @@ def _normalize_priors_overrides(
     """Convert `cfg['priors']` into a numpyro-style priors registry (zero-arg callables)."""
     normalized: Dict[str, Any] = {}
     for name, value in (priors_override or {}).items():
-        # Already numpyro-style callables.
-        if callable(value):
-            normalized[name] = value
-            continue
-
-        # numpyro distributions => wrap into a sampler callable.
+        # numpyro Distributions are callable; must handle before generic ``callable``.
         if isinstance(value, dist.Distribution):
             normalized[name] = (lambda n=name, d=value: numpyro.sample(n, d))
+            continue
+
+        # Already numpyro-style callables (non-Distribution).
+        if callable(value):
+            normalized[name] = value
             continue
 
         # Fixed scalar/array => constant callable (no sampling site).

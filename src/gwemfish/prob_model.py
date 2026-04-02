@@ -82,6 +82,28 @@ def _sample_image_positions(n_images, priors, image_position_priors):
     return jnp.array(x_list), jnp.array(y_list)
 
 
+def _maybe_set_mass_sheet_kappa0(kappa0, lens_image=None, lens_gw=None):
+    """Set ``kappa0`` on ``MassModelMassSheet`` (or compatible) before GW/EM forward calls."""
+    if kappa0 is None:
+        return
+    candidate_attr_names = (
+        "mass_model",
+        "lens_mass_model",
+        "MassModel",
+        "lens_mass_model_class",
+    )
+    for obj in (lens_image, lens_gw):
+        if obj is None:
+            continue
+        targets = [obj]
+        for attr in candidate_attr_names:
+            if hasattr(obj, attr):
+                targets.append(getattr(obj, attr))
+        for target in targets:
+            if hasattr(target, "kappa0"):
+                setattr(target, "kappa0", kappa0)
+
+
 # def _sample_image_positions_flat(n_images, priors, image_positions):
 #     # Backward-compatible wrapper.
 #     # Keep the name, but delegate to the unified implementation.
@@ -625,6 +647,8 @@ class ProbModel_GW_only(hcl.NumpyroModel):
 
         T_star = p['T_star']()
         dL     = p['dL']()
+        kappa0 = p["lens_kappa0"]() if "lens_kappa0" in p else None
+        _maybe_set_mass_sheet_kappa0(kappa0, lens_image=None, lens_gw=self.lens_gw)
 
         prior_lens = _build_prior_lens(
             lens_theta_E  = p['lens_theta_E'](),
