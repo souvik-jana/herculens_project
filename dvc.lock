@@ -9,13 +9,13 @@ stages:
       size: 6844
     - path: src/gwemfish
       hash: md5
-      md5: cbe1e7c9b722116f3f8a5680df17f5b9.dir
-      size: 405647
+      md5: 62321bad4183fc3edd53a3efe7f18c1a.dir
+      size: 431642
       nfiles: 33
     outs:
     - path: examples/outputs/outputs_gw_only
       hash: md5
-      md5: dae875979314726e50eb35b6f8a03219.dir
+      md5: 7445e2a053d46bf5581b66e95c1f4b0d.dir
       size: 110382633
       nfiles: 16
   em_gw:
@@ -27,12 +27,12 @@ stages:
       size: 10096
     - path: src/gwemfish
       hash: md5
-      md5: f9c38f66fe58e472ccf46adfa95de621.dir
+      md5: 62321bad4183fc3edd53a3efe7f18c1a.dir
       size: 431642
       nfiles: 33
     outs:
     - path: examples/outputs/outputs_em_gw
       hash: md5
-      md5: 6e64e1a5146fcbcf3c0286ff298c2066.dir
+      md5: a04de41f00e1897f4b477030d1b1d293.dir
       size: 71194966
       nfiles: 23
