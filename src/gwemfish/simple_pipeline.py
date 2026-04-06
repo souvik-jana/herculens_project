@@ -15,12 +15,14 @@ User-facing API (intended usage):
 This module intentionally keeps a high-level configuration surface:
   - Almost everything can be overridden via a single `cfg` dict.
   - `cfg['priors']` supports callables, fixed values, or numpyro distribution objects.
+  - Set `cfg['use_parameter_layout']=True` for flat names `lens0_*`, `source0_*`, `light0_*`
+    and defaults from ``gwemfish.profile_prior_rules`` (see ``parameter_layout`` / ``flex_prob_model``).
 """
 
 from __future__ import annotations
 
 import copy
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 def _deep_merge_dict(base: Dict[str, Any], override: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -291,7 +293,11 @@ def make_default_cfg() -> Dict[str, Any]:
             "save_source_samples_path": None,
             "save_system_plot_path": None,
             "json_path": None,
+            # ``plot_system_observation``: ``"gw"`` (default), ``"em"``, ``"both"``, or ``"none"``.
+            "system_plot_image_overlay": "gw",
         },
+        # Use ``lens0_*``, ``source0_*``, ``light0_*`` names and ``profile_prior_rules`` defaults.
+        "use_parameter_layout": False,
     }
 
 
@@ -305,20 +311,58 @@ def _normalize_priors_overrides(
     """Convert `cfg['priors']` into a numpyro-style priors registry (zero-arg callables)."""
     normalized: Dict[str, Any] = {}
     for name, value in (priors_override or {}).items():
-        # Already numpyro-style callables.
-        if callable(value):
-            normalized[name] = value
-            continue
-
-        # numpyro distributions => wrap into a sampler callable.
+        # Distributions first: in numpyro they are callable too, so must precede callable().
         if isinstance(value, dist.Distribution):
             normalized[name] = (lambda n=name, d=value: numpyro.sample(n, d))
+            continue
+        # Numpyro-style zero-arg callables (custom priors).
+        if callable(value):
+            normalized[name] = value
             continue
 
         # Fixed scalar/array => constant callable (no sampling site).
         normalized[name] = (lambda v=value: jnp.asarray(v))
 
     return normalized
+
+
+def _legacy_epl_like_kw(kwargs_lens: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Pick EPL-like dict (``theta_E`` + ``gamma``) for legacy ``truth_params``; else first ``theta_E``."""
+    try:
+        return next(kw for kw in kwargs_lens if "theta_E" in kw and "gamma" in kw)
+    except StopIteration:
+        return next(kw for kw in kwargs_lens if "theta_E" in kw)
+
+
+def _legacy_shear_kw(kwargs_lens: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return next(kw for kw in kwargs_lens if "gamma1" in kw)
+
+
+# Explicit defaults per mass profile so sparse user ``kwargs_lens`` match what the
+# jaxtronomy/lenstronomy solver and herculens use implicitly. User entries override.
+# ``setup_lens`` returns kwargs unchanged; merging here makes ``ctx['kwargs_lens']`` the
+# single source of truth for legacy ``truth_params`` (no duplicate magic numbers).
+_DEFAULT_KWARGS_BY_LENS_MODEL: Dict[str, Dict[str, float]] = {
+    "EPL": {"e1": 0.0, "e2": 0.0, "gamma": 2.0, "center_x": 0.0, "center_y": 0.0},
+    "SIE": {"e1": 0.0, "e2": 0.0, "center_x": 0.0, "center_y": 0.0},
+    "SIS": {"center_x": 0.0, "center_y": 0.0},
+    "SHEAR": {"gamma1": 0.0, "gamma2": 0.0, "ra_0": 0.0, "dec_0": 0.0},
+    "NIE": {"e1": 0.0, "e2": 0.0, "center_x": 0.0, "center_y": 0.0},
+}
+
+
+def _kwargs_lens_with_explicit_defaults(
+    lens_model_list: List[str], kwargs_lens: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    if len(kwargs_lens) != len(lens_model_list):
+        raise ValueError(
+            f"len(kwargs_lens)={len(kwargs_lens)} != len(lens_model_list)={len(lens_model_list)}"
+        )
+    out: List[Dict[str, Any]] = []
+    for name, kw in zip(lens_model_list, kwargs_lens):
+        base = _DEFAULT_KWARGS_BY_LENS_MODEL.get(name, {})
+        out.append({**base, **copy.deepcopy(kw)})
+    return out
 
 
 def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -349,7 +393,10 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     em_cfg = cfg_full["em"]
 
     lens_model_list = lens_cfg["lens_model_list"]
-    kwargs_lens_in = lens_cfg["kwargs_lens"]
+    kwargs_lens_in = _kwargs_lens_with_explicit_defaults(
+        lens_model_list, lens_cfg["kwargs_lens"]
+    )
+    cfg_full["lens"]["kwargs_lens"] = kwargs_lens_in
     zl = lens_cfg["zl"]
     zs = lens_cfg["zs"]
     # Herculens EM simulation uses `kwargs_source[0]['center_x/y']` for the source light center.
@@ -357,9 +404,12 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     src_center_x = em_cfg["kwargs_source"][0].get("center_x", em_cfg["source_pos"][0])
     src_center_y = em_cfg["kwargs_source"][0].get("center_y", em_cfg["source_pos"][1])
     source_pos_em = (src_center_x, src_center_y)
-
-    # Set up lens geometry and get a herculens MassModel instance.
-    kwargs_lens, x_image_true, y_image_true, lens_mass_model = setup_lens(
+    
+    # Mass model + image positions for EM (not GW-specific): ``simulate_em`` needs
+    # ``lens_mass_model``; EM lens-equation image positions go into ``truth_params``
+    # as ``x_image_true_em`` / ``y_image_true_em`` (distinct from GW ``image_x*``).
+    # ``setup_lens`` returns the same ``kwargs_lens`` reference it was given.
+    kwargs_lens, x_image_true_em, y_image_true_em, lens_mass_model = setup_lens(
         lens_model_list=lens_model_list,
         kwargs_lens=kwargs_lens_in,
         zl=zl,
@@ -377,7 +427,7 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     lens_light_model = em_cfg["lens_light_model_class"]()
 
     em_obs, lens_image = simulate_em(
-        kwargs_lens=kwargs_lens,
+        kwargs_lens=cfg_full["lens"]["kwargs_lens"],
         kwargs_source=em_cfg["kwargs_source"],
         kwargs_lens_light=em_cfg["kwargs_lens_light"],
         lens_mass_model=lens_mass_model,
@@ -391,9 +441,9 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         seed=em_cfg["seed"],
     )
 
-    # Parse truth lens parameters from kwargs_lens list.
-    epl = next(kw for kw in kwargs_lens if "theta_E" in kw)
-    shear = next(kw for kw in kwargs_lens if "gamma1" in kw)
+    # Parse truth lens parameters from kwargs_lens list (legacy flat names).
+    epl = _legacy_epl_like_kw(kwargs_lens)
+    shear = _legacy_shear_kw(kwargs_lens)
 
     src = em_cfg["kwargs_source"][0]
     light = em_cfg["kwargs_lens_light"][0]
@@ -402,11 +452,11 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "lens_theta_E": float(epl["theta_E"]),
         "lens_e1": float(epl["e1"]),
         "lens_e2": float(epl["e2"]),
-        "lens_gamma": float(epl["gamma"]),
-        "lens_gamma1": float(shear.get("gamma1", 0.0)),
-        "lens_gamma2": float(shear.get("gamma2", 0.0)),
-        "lens_center_x": float(epl.get("center_x", 0.0)),
-        "lens_center_y": float(epl.get("center_y", 0.0)),
+        "lens_gamma": float(epl["gamma"]) if "gamma" in epl else 2.0,
+        "lens_gamma1": float(shear["gamma1"]),
+        "lens_gamma2": float(shear["gamma2"]),
+        "lens_center_x": float(epl["center_x"]),
+        "lens_center_y": float(epl["center_y"]),
         "source_amp": float(src["amp"]),
         "source_R_sersic": float(src["R_sersic"]),
         "source_n": float(src["n_sersic"]),
@@ -423,9 +473,31 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "light_center_y": float(light.get("center_y", 0.0)),
         "noise_sigma_bkg": float(em_cfg["noise_simu_kwargs"]["background_rms"]),
         # Helpful for some plots; EM-only doesn't necessarily infer these.
-        "x_image_true": x_image_true,
-        "y_image_true": y_image_true,
+        "x_image_true_em": x_image_true_em,
+        "y_image_true_em": y_image_true_em,
     }
+
+    if cfg_full.get("use_parameter_layout"):
+        from .parameter_layout import build_parameter_layout, truth_vector_from_kwargs
+
+        ent, _ = build_parameter_layout(
+            lens_image,
+            kwargs_lens=kwargs_lens,
+            kwargs_source=em_cfg["kwargs_source"],
+            kwargs_lens_light=em_cfg["kwargs_lens_light"],
+        )
+        print('Param entries:', ent)
+
+        truth_params.update(
+            truth_vector_from_kwargs(
+                ent,
+                kwargs_lens=kwargs_lens,
+                kwargs_source=em_cfg["kwargs_source"],
+                kwargs_lens_light=em_cfg["kwargs_lens_light"],
+                extra={"noise_sigma_bkg": truth_params["noise_sigma_bkg"]},
+            )
+        )
+        # print('truth_params_with_parameter_layout_keys:', truth_params.keys())
 
     return {
         "cfg": cfg_full,
@@ -460,9 +532,13 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
     # Ensure lens geometry exists in ctx (for GW-only use cases).
     if "kwargs_lens" not in ctx or "lens_mass_model" not in ctx or "lens_model_list" not in ctx:
         lens_cfg = cfg_full["lens"]
+        kwargs_lens_gw = _kwargs_lens_with_explicit_defaults(
+            lens_cfg["lens_model_list"], lens_cfg["kwargs_lens"]
+        )
+        cfg_full["lens"]["kwargs_lens"] = kwargs_lens_gw
         kwargs_lens, _, _, lens_mass_model = setup_lens(
             lens_model_list=lens_cfg["lens_model_list"],
-            kwargs_lens=lens_cfg["kwargs_lens"],
+            kwargs_lens=kwargs_lens_gw,
             zl=lens_cfg["zl"],
             zs=lens_cfg["zs"],
             source_pos=cfg_full["gw"]["source_pos"],
@@ -502,19 +578,18 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
     # ProbModel_GW_only includes these keys in its priors/trace.
     if "kwargs_lens" in ctx:
         kwargs_lens = ctx["kwargs_lens"]
-        # These are the standard EPL+SHEAR defaults used in this repository.
-        epl = next(kw for kw in kwargs_lens if "theta_E" in kw)
-        shear = next(kw for kw in kwargs_lens if "gamma1" in kw)
+        epl = _legacy_epl_like_kw(kwargs_lens)
+        shear = _legacy_shear_kw(kwargs_lens)
         truth_params.update(
             {
                 "lens_theta_E": float(epl["theta_E"]),
                 "lens_e1": float(epl["e1"]),
                 "lens_e2": float(epl["e2"]),
-                "lens_gamma": float(epl["gamma"]),
-                "lens_center_x": float(epl.get("center_x", 0.0)),
-                "lens_center_y": float(epl.get("center_y", 0.0)),
-                "lens_gamma1": float(shear.get("gamma1", 0.0)),
-                "lens_gamma2": float(shear.get("gamma2", 0.0)),
+                "lens_gamma": float(epl["gamma"]) if "gamma" in epl else 2.0,
+                "lens_center_x": float(epl["center_x"]),
+                "lens_center_y": float(epl["center_y"]),
+                "lens_gamma1": float(shear["gamma1"]),
+                "lens_gamma2": float(shear["gamma2"]),
             }
         )
     truth_params.update(
@@ -527,6 +602,41 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
     for i in range(len(x_img_gw)):
         truth_params[f"image_x{i+1}"] = float(x_img_gw[i])
         truth_params[f"image_y{i+1}"] = float(y_img_gw[i])
+
+    if cfg_full.get("use_parameter_layout"):
+        from .parameter_layout import build_mass_parameter_entries, build_parameter_layout, truth_vector_from_kwargs
+        from .config import DEFAULT_KWARGS_LENS_LIGHT, DEFAULT_KWARGS_SOURCE
+
+        if ctx.get("lens_image") is not None:
+            em = cfg_full.get("em") or {}
+            kwargs_source = em.get("kwargs_source") or DEFAULT_KWARGS_SOURCE
+            kwargs_lens_light = em.get("kwargs_lens_light") or DEFAULT_KWARGS_LENS_LIGHT
+            ent, _ = build_parameter_layout(
+                ctx["lens_image"],
+                kwargs_lens=ctx["kwargs_lens"],
+                kwargs_source=kwargs_source,
+                kwargs_lens_light=kwargs_lens_light,
+            )
+            truth_params.update(
+                truth_vector_from_kwargs(
+                    ent,
+                    kwargs_lens=ctx["kwargs_lens"],
+                    kwargs_source=kwargs_source,
+                    kwargs_lens_light=kwargs_lens_light,
+                )
+            )
+        else:
+            ent = build_mass_parameter_entries(
+                ctx["lens_mass_model"], kwargs_lens=ctx["kwargs_lens"]
+            )
+            truth_params.update(
+                truth_vector_from_kwargs(
+                    ent,
+                    kwargs_lens=ctx["kwargs_lens"],
+                    kwargs_source=[],
+                    kwargs_lens_light=[],
+                )
+            )
 
     ctx = dict(ctx)
     ctx.update(
@@ -638,9 +748,98 @@ def run_inference(
     # Combined priors: internal defaults first, user overrides last.
     priors_combined = {**priors_internal, **priors_image_pos, **priors_user_norm}
 
+    use_layout = bool(cfg_full.get("use_parameter_layout", False))
+    priors_flex: Optional[Dict[str, Any]] = None
+
     # Build the correct probabilistic model.
     image_position_priors_override = None
-    if mode == "EM+GW":
+    if use_layout:
+        from .config import DEFAULT_KWARGS_LENS_LIGHT, DEFAULT_KWARGS_SOURCE
+        from .flex_prob_model import FlexProbModelEMGW, FlexProbModelEMOnly, FlexProbModelGWOnly
+        from .parameter_layout import (
+            build_mass_parameter_entries,
+            build_parameter_layout,
+            build_priors_registry,
+        )
+
+        if mode == "EM+GW":
+            em_local = cfg_full.get("em") or {}
+            kwargs_source = em_local.get("kwargs_source") or DEFAULT_KWARGS_SOURCE
+            kwargs_lens_light = em_local.get("kwargs_lens_light") or DEFAULT_KWARGS_LENS_LIGHT
+            entries, _ = build_parameter_layout(
+                ctx["lens_image"],
+                kwargs_lens=ctx["kwargs_lens"],
+                kwargs_source=kwargs_source,
+                kwargs_lens_light=kwargs_lens_light,
+            )
+            priors_reg = build_priors_registry(
+                entries,
+                lens_image=ctx["lens_image"],
+                user_priors=priors_user_norm,
+            )
+            priors_flex = {**priors_reg, **priors_internal, **priors_image_pos}
+            x_true = [truth_params[f"image_x{i+1}"] for i in range(n_images)]
+            y_true = [truth_params[f"image_y{i+1}"] for i in range(n_images)]
+            image_position_priors_override = {
+                "x_image_true": jnp.asarray(x_true),
+                "y_image_true": jnp.asarray(y_true),
+                "delx": jnp.asarray([2.0 * half_width] * n_images),
+                "dely": jnp.asarray([2.0 * half_width] * n_images),
+            }
+            probmodel = FlexProbModelEMGW(
+                entries,
+                priors_flex,
+                n_images=n_images,
+                gw_observations=ctx["gw_obs"],
+                em_observations=ctx["em_obs"],
+                lens_image=ctx["lens_image"],
+                lens_gw=ctx["lens_gw"],
+                noise=ctx["noise_inf"],
+                image_position_priors=image_position_priors_override,
+                gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+            )
+        elif mode == "GW-only":
+            entries = build_mass_parameter_entries(
+                ctx["lens_mass_model"], kwargs_lens=ctx["kwargs_lens"]
+            )
+            priors_reg = build_priors_registry(
+                entries,
+                mass_model=ctx["lens_mass_model"],
+                user_priors=priors_user_norm,
+            )
+            priors_flex = {**priors_reg, **priors_internal, **priors_image_pos}
+            probmodel = FlexProbModelGWOnly(
+                entries,
+                priors_flex,
+                n_images=n_images,
+                gw_observations=ctx["gw_obs"],
+                lens_gw=ctx["lens_gw"],
+                gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+            )
+        else:
+            em_local = cfg_full.get("em") or {}
+            kwargs_source = em_local.get("kwargs_source") or DEFAULT_KWARGS_SOURCE
+            kwargs_lens_light = em_local.get("kwargs_lens_light") or DEFAULT_KWARGS_LENS_LIGHT
+            entries, _ = build_parameter_layout(
+                ctx["lens_image"],
+                kwargs_lens=ctx["kwargs_lens"],
+                kwargs_source=kwargs_source,
+                kwargs_lens_light=kwargs_lens_light,
+            )
+            priors_reg = build_priors_registry(
+                entries,
+                lens_image=ctx["lens_image"],
+                user_priors=priors_user_norm,
+            )
+            priors_flex = {**priors_reg, **priors_internal}
+            probmodel = FlexProbModelEMOnly(
+                entries,
+                priors_flex,
+                em_observations=ctx["em_obs"],
+                lens_image=ctx["lens_image"],
+                noise=ctx["noise_inf"],
+            )
+    elif mode == "EM+GW":
         # For EM+GW, image positions are handled via image-position prior geometry
         # (used by ProbModel to sample image_x/y when not overridden in priors).
         x_true = [truth_params[f"image_x{i+1}"] for i in range(n_images)]
@@ -682,7 +881,6 @@ def run_inference(
     # Keys to include and expansion point.
     prior_sample = probmodel.get_sample(prng_key=jax.random.PRNGKey(int(cfg_full["inference"]["prior_sample_rng_key"])))
     keys_to_include = list(prior_sample.keys())
-
     input_params: Dict[str, Any] = {}
     missing = []
     for k in keys_to_include:
@@ -696,7 +894,7 @@ def run_inference(
             + ", ".join(missing)
             + ". Provide these via `cfg['priors']` (and re-run setup), or ensure simulation truth matches."
         )
-
+    print('input_params:', input_params)
     u0 = jnp.asarray([input_params[k] for k in keys_to_include], dtype=jnp.float64)
 
     approx_logp, logp0, g0, H0, F0, Q0 = compute_fisher(
@@ -707,10 +905,29 @@ def run_inference(
         rng_key=jax.random.PRNGKey(fisher_seed),
         order=int(cfg_full["inference"]["fisher_order"]),
     )
-
+    # Diagnostic: gradient and Hessian diagonal at u0 (Fisher expansion point).
+    for i, key in enumerate(keys_to_include):
+        gi = g0[i]
+        if jnp.isnan(gi):
+            print(f"Gradient w.r.t {key} is nan")
+        elif jnp.isinf(gi):
+            print(f"Gradient w.r.t {key} is inf")
+        elif gi == 0:
+            print(f"Gradient w.r.t {key} is zero")
+    h_diag = jnp.diag(H0)
+    for i, key in enumerate(keys_to_include):
+        hi = h_diag[i]
+        if jnp.isnan(hi):
+            print(f"Hessian diagonal H[{key},{key}] is nan")
+        elif jnp.isinf(hi):
+            print(f"Hessian diagonal H[{key},{key}] is inf")
+        elif hi == 0:
+            print(f"Hessian diagonal H[{key},{key}] is zero")
     truths_dict = {k: float(input_params[k]) for k in keys_to_include}
 
     # Fisher-only: sample from Gaussian N(u0, cov)
+    priors_for_fisher = priors_flex if priors_flex is not None else priors_combined
+
     if method_norm == "fisher":
         FM = -H0
         try:
@@ -747,13 +964,13 @@ def run_inference(
         fisher_prob_model = ProbModelFisher_GW_only(
             keys_to_include=keys_to_include,
             approx_logp=approx_logp,
-            priors=priors_combined,
+            priors=priors_for_fisher,
         )
     else:
         fisher_prob_model = ProbModelFisher(
             keys_to_include=keys_to_include,
             approx_logp=approx_logp,
-            priors=priors_combined,
+            priors=priors_for_fisher,
             image_position_priors=image_position_priors_override,
         )
 
@@ -963,18 +1180,54 @@ def to_source_plane_samples(
 
     n_images = int(sp_cfg.get("n_images", cfg_full["gw"]["n_images"]))
 
-    # Ensure required lens keys exist for source-plane conversion even when
-    # some parameters were fixed (thus absent from posterior sample dict).
-    required_lens_keys = [
-        "lens_theta_E",
-        "lens_e1",
-        "lens_e2",
-        "lens_gamma",
-        "lens_gamma1",
-        "lens_gamma2",
-        "lens_center_x",
-        "lens_center_y",
-    ]
+    use_layout = bool(cfg_full.get("use_parameter_layout", False))
+    build_fn = build_kwargs_lens_vectorised_fn
+
+    if use_layout and ctx.get("lens_image") is not None:
+        from .config import DEFAULT_KWARGS_LENS_LIGHT, DEFAULT_KWARGS_SOURCE
+        from .parameter_layout import build_parameter_layout, build_vectorised_lens_kwargs_fn, flat_keys
+
+        em_local = cfg_full.get("em") or {}
+        kwargs_source = em_local.get("kwargs_source") or DEFAULT_KWARGS_SOURCE
+        kwargs_lens_light = em_local.get("kwargs_lens_light") or DEFAULT_KWARGS_LENS_LIGHT
+        entries, _ = build_parameter_layout(
+            ctx["lens_image"],
+            kwargs_lens=ctx["kwargs_lens"],
+            kwargs_source=kwargs_source,
+            kwargs_lens_light=kwargs_lens_light,
+        )
+        required_lens_keys = [fk for fk in flat_keys(entries) if fk.startswith("lens")]
+        if build_fn is None:
+            build_fn = build_vectorised_lens_kwargs_fn(
+                entries, len(ctx["lens_mass_model"].func_list)
+            )
+    elif use_layout:
+        from .parameter_layout import (
+            build_mass_parameter_entries,
+            build_vectorised_lens_kwargs_fn,
+            flat_keys,
+        )
+
+        entries = build_mass_parameter_entries(
+            ctx["lens_mass_model"], kwargs_lens=ctx["kwargs_lens"]
+        )
+        required_lens_keys = list(flat_keys(entries))
+        if build_fn is None:
+            build_fn = build_vectorised_lens_kwargs_fn(
+                entries, len(ctx["lens_mass_model"].func_list)
+            )
+    else:
+        required_lens_keys = [
+            "lens_theta_E",
+            "lens_e1",
+            "lens_e2",
+            "lens_gamma",
+            "lens_gamma1",
+            "lens_gamma2",
+            "lens_center_x",
+            "lens_center_y",
+        ]
+
     if not samples:
         raise ValueError("Empty samples dict passed to `to_source_plane_samples(...)`.")
     first_key = next(iter(samples))
@@ -1012,7 +1265,7 @@ def to_source_plane_samples(
         sample_dict=sample_dict_for_source,
         lens_model_obj=ctx["lens_gw"],
         n_images=n_images,
-        build_kwargs_lens_vectorised_fn=build_kwargs_lens_vectorised_fn,
+        build_kwargs_lens_vectorised_fn=build_fn,
         n_subsample=sp_cfg.get("n_subsample"),
         seed=int(sp_cfg.get("seed", 42)),
         filter_std=sp_cfg.get("filter_std"),
@@ -1085,7 +1338,12 @@ def plot_system_observation(
     *,
     cfg: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Plot clean and noisy EM system image with true GW image positions.
+    """Plot clean and noisy EM system image with optional image-position overlays.
+
+    Overlay mode: ``cfg['output']['system_plot_image_overlay']`` — ``"gw"`` (default,
+    uses ``truth_params['image_x*']`` / ``image_y*`` or ``ctx['x_img_gw']``),
+    ``"em"`` (lens equation at EM source: ``x_image_true_em`` / ``y_image_true_em``),
+    ``"both"``, or ``"none"``.
 
     If `cfg['output']['save_system_plot_path']` is set, saves the figure there.
     """
@@ -1133,11 +1391,56 @@ def plot_system_observation(
     ax2.set_xlabel("RA [arcsec]")
     ax2.set_ylabel("Dec [arcsec]")
 
-    x_true = np.asarray(ctx.get("truth_params", {}).get("x_image_true", []))
-    y_true = np.asarray(ctx.get("truth_params", {}).get("y_image_true", []))
-    if x_true.size > 0 and y_true.size > 0:
-        ax1.scatter(x_true, y_true, color="k", marker="x", s=60, label="GW")
-        ax2.scatter(x_true, y_true, color="k", marker="x", s=60, label="GW")
+    out_plot = cfg_full.get("output", {})
+    overlay = str(out_plot.get("system_plot_image_overlay", "gw")).strip().lower()
+    if overlay not in ("gw", "em", "both", "none"):
+        overlay = "gw"
+
+    tp = ctx.get("truth_params", {})
+    gw_cfg = cfg_full.get("gw") or {}
+    n_gw_cap = int(gw_cfg.get("n_images", 32))
+
+    def _gw_xy() -> Tuple[np.ndarray, np.ndarray]:
+        xs: List[float] = []
+        ys: List[float] = []
+        for i in range(n_gw_cap):
+            kx, ky = f"image_x{i + 1}", f"image_y{i + 1}"
+            if kx not in tp or ky not in tp:
+                break
+            xs.append(float(tp[kx]))
+            ys.append(float(tp[ky]))
+        if xs:
+            return np.asarray(xs), np.asarray(ys)
+        if "x_img_gw" in ctx and "y_img_gw" in ctx:
+            xg = np.asarray(ctx["x_img_gw"]).ravel()
+            yg = np.asarray(ctx["y_img_gw"]).ravel()
+            if xg.size and xg.size == yg.size:
+                return xg, yg
+        return np.asarray([]), np.asarray([])
+
+    def _em_xy() -> Tuple[np.ndarray, np.ndarray]:
+        x = np.asarray(tp.get("x_image_true_em", tp.get("x_image_true", [])))
+        y = np.asarray(tp.get("y_image_true_em", tp.get("y_image_true", [])))
+        return x, y
+
+    any_legend = False
+    if overlay in ("gw", "both"):
+        x_gw, y_gw = _gw_xy()
+        if x_gw.size > 0 and y_gw.size > 0 and x_gw.size == y_gw.size:
+            ax1.scatter(x_gw, y_gw, color="k", marker="x", s=60, label="GW images")
+            ax2.scatter(x_gw, y_gw, color="k", marker="x", s=60, label="GW images")
+            any_legend = True
+    if overlay in ("em", "both"):
+        x_em, y_em = _em_xy()
+        if x_em.size > 0 and y_em.size > 0 and x_em.size == y_em.size:
+            ax1.scatter(
+                x_em, y_em, color="tab:orange", marker="+", s=80, label="EM (lens eq.)"
+            )
+            ax2.scatter(
+                x_em, y_em, color="tab:orange", marker="+", s=80, label="EM (lens eq.)"
+            )
+            any_legend = True
+    if any_legend:
         ax1.legend()
         ax2.legend()
 

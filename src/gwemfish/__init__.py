@@ -15,6 +15,17 @@ from .data_sim import (
 )
 # from .prob_model_PL import ProbModel, ProbModelSourcePlane, ProbModelFisher, ProbModel_EM_GW
 from .prob_model import ProbModel, ProbModelSourcePlane, ProbModelFisher, ProbModel_EM_only
+from .profile_prior_rules import required_default_sampler
+from .parameter_layout import (
+    build_mass_parameter_entries,
+    build_parameter_layout,
+    build_priors_registry,
+    build_vectorised_lens_kwargs_fn,
+    flat_keys,
+    make_infer_array_shape,
+    truth_vector_from_kwargs,
+)
+from .flex_prob_model import FlexProbModelEMGW, FlexProbModelEMOnly, FlexProbModelGWOnly
 from .inference import run_mcmc
 from .fisher import compute_fisher
 from .config import (
@@ -107,5 +118,17 @@ __all__ = [
     'make_default_cfg',
     # EM-only model
     'ProbModel_EM_only',
+    # Flexible layout (lens0_*, source0_*, light0_*) + profile priors
+    'required_default_sampler',
+    'build_parameter_layout',
+    'build_mass_parameter_entries',
+    'build_priors_registry',
+    'truth_vector_from_kwargs',
+    'flat_keys',
+    'make_infer_array_shape',
+    'build_vectorised_lens_kwargs_fn',
+    'FlexProbModelEMGW',
+    'FlexProbModelEMOnly',
+    'FlexProbModelGWOnly',
 ]
 
