@@ -186,9 +186,10 @@ def make_default_cfg() -> Dict[str, Any]:
         DEFAULT_SOURCE_LIGHT_MODEL,
         DEFAULT_LENS_LIGHT_MODEL,
     )
-    from .config import SOLVER_PARAMS
+    from .config import IMAGE_POSITION_SOLVER_DEFAULTS, SOLVER_PARAMS
 
     # JAXCosmology is not in `config.py`, keep the same defaults used by examples.
+    _gw_solver_params = {**IMAGE_POSITION_SOLVER_DEFAULTS, **SOLVER_PARAMS}
     return {
         "jax": {
             "ncpus": None,  # None => use all available
@@ -217,7 +218,8 @@ def make_default_cfg() -> Dict[str, Any]:
             "n_images": 4,
             "source_pos": DEFAULT_SOURCE_POS_GW,
             "cosmology": {"H0": 67.3, "Om0": 0.316},
-            "solver_params": SOLVER_PARAMS,
+            # Merges jaxtronomy image-position defaults (``solver``, grid kwargs) with Helens keys.
+            "solver_params": _gw_solver_params,
             # GW likelihood multipliers (see ``ProbModel``): sigma_td * gw_obs['time_delays'],
             # sigma_dL_eff * gw_obs['dL_eff'], epsilon * ones_like(betx_x_diff).
             "error_scales": {
@@ -279,6 +281,7 @@ def make_default_cfg() -> Dict[str, Any]:
             "save_tag": None,
         },
         "source_plane": {
+            # Unused by ``to_source_plane_samples`` (image count follows ``_resolve_gw_n_images``).
             "n_images": 4,
             "n_subsample": None,
             "seed": 42,
@@ -326,16 +329,87 @@ def _normalize_priors_overrides(
     return normalized
 
 
+def _fixed_literal_prior_keys(priors_user: Optional[Dict[str, Any]]) -> set[str]:
+    """Names in ``cfg['priors']`` given as fixed scalars/arrays (not callables / Distributions)."""
+    if not priors_user:
+        return set()
+    import numpy as np
+    import numpyro.distributions as dist
+
+    out: set[str] = set()
+    for k, v in priors_user.items():
+        if isinstance(v, dist.Distribution):
+            continue
+        if callable(v):
+            continue
+        try:
+            arr = np.asarray(v)
+            if arr.dtype == object:
+                continue
+            if arr.size >= 1:
+                out.add(k)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _float_from_user_prior_literal(v: Any) -> float:
+    import numpy as np
+
+    return float(np.asarray(v).reshape(-1)[0])
+
+
+def _merge_flex_priors_with_gw_image_pos(
+    priors_reg: Dict[str, Any],
+    priors_internal: Dict[str, Any],
+    priors_image_pos: Dict[str, Any],
+    priors_user_norm: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Do not overwrite user image priors with default tight GW uniforms (flex layout paths)."""
+    out = {**priors_reg, **priors_internal}
+    for k, v in priors_image_pos.items():
+        if k not in priors_user_norm:
+            out[k] = v
+    return out
+
+
+# Legacy flat ``truth_params`` need these keys even when ``lens_model_list`` has no EPL/SIE
+# (e.g. SIS-only, NFW, flex layout). Layout mode still overwrites via ``truth_vector_from_kwargs``.
+_LEGACY_TRUTH_MASS_KW_FALLBACK: Dict[str, Any] = {
+    "theta_E": 1.0,
+    "e1": 0.0,
+    "e2": 0.0,
+    "gamma": 2.0,
+    "center_x": 0.0,
+    "center_y": 0.0,
+}
+
+
 def _legacy_epl_like_kw(kwargs_lens: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """Pick EPL-like dict (``theta_E`` + ``gamma``) for legacy ``truth_params``; else first ``theta_E``."""
-    try:
-        return next(kw for kw in kwargs_lens if "theta_E" in kw and "gamma" in kw)
-    except StopIteration:
-        return next(kw for kw in kwargs_lens if "theta_E" in kw)
+    """Pick main mass dict for legacy ``lens_*`` truth keys; never raise if EPL is absent."""
+
+    def _is_shear_kw(kw: Dict[str, Any]) -> bool:
+        return "gamma1" in kw and "theta_E" not in kw
+
+    for kw in kwargs_lens:
+        if _is_shear_kw(kw):
+            continue
+        if "theta_E" in kw and "gamma" in kw:
+            return kw
+    for kw in kwargs_lens:
+        if _is_shear_kw(kw):
+            continue
+        if "theta_E" in kw:
+            return kw
+    return dict(_LEGACY_TRUTH_MASS_KW_FALLBACK)
 
 
 def _legacy_shear_kw(kwargs_lens: List[Dict[str, Any]]) -> Dict[str, Any]:
-    return next(kw for kw in kwargs_lens if "gamma1" in kw)
+    """Return the SHEAR-like component, or zero shear if the mass list has no such profile."""
+    for kw in kwargs_lens:
+        if "gamma1" in kw:
+            return kw
+    return {"gamma1": 0.0, "gamma2": 0.0, "ra_0": 0.0, "dec_0": 0.0}
 
 
 # Explicit defaults per mass profile so sparse user ``kwargs_lens`` match what the
@@ -441,22 +515,13 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         seed=em_cfg["seed"],
     )
 
-    # Parse truth lens parameters from kwargs_lens list (legacy flat names).
-    epl = _legacy_epl_like_kw(kwargs_lens)
-    shear = _legacy_shear_kw(kwargs_lens)
-
     src = em_cfg["kwargs_source"][0]
     light = em_cfg["kwargs_lens_light"][0]
 
-    truth_params = {
-        "lens_theta_E": float(epl["theta_E"]),
-        "lens_e1": float(epl["e1"]),
-        "lens_e2": float(epl["e2"]),
-        "lens_gamma": float(epl["gamma"]) if "gamma" in epl else 2.0,
-        "lens_gamma1": float(shear["gamma1"]),
-        "lens_gamma2": float(shear["gamma2"]),
-        "lens_center_x": float(epl["center_x"]),
-        "lens_center_y": float(epl["center_y"]),
+    # Legacy ``lens_theta_E`` / ``lens_e1`` / … names assume an EPL+shear decomposition and are
+    # wrong for e.g. SIS-only. With ``use_parameter_layout``, mass truth is only ``lens0_*`` /
+    # … from ``truth_vector_from_kwargs`` (plus optional legacy source/light keys below).
+    common_truth = {
         "source_amp": float(src["amp"]),
         "source_R_sersic": float(src["R_sersic"]),
         "source_n": float(src["n_sersic"]),
@@ -472,7 +537,6 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "light_center_x": float(light.get("center_x", 0.0)),
         "light_center_y": float(light.get("center_y", 0.0)),
         "noise_sigma_bkg": float(em_cfg["noise_simu_kwargs"]["background_rms"]),
-        # Helpful for some plots; EM-only doesn't necessarily infer these.
         "x_image_true_em": x_image_true_em,
         "y_image_true_em": y_image_true_em,
     }
@@ -480,14 +544,13 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     if cfg_full.get("use_parameter_layout"):
         from .parameter_layout import build_parameter_layout, truth_vector_from_kwargs
 
+        truth_params = dict(common_truth)
         ent, _ = build_parameter_layout(
             lens_image,
             kwargs_lens=kwargs_lens,
             kwargs_source=em_cfg["kwargs_source"],
             kwargs_lens_light=em_cfg["kwargs_lens_light"],
         )
-        print('Param entries:', ent)
-
         truth_params.update(
             truth_vector_from_kwargs(
                 ent,
@@ -497,7 +560,20 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
                 extra={"noise_sigma_bkg": truth_params["noise_sigma_bkg"]},
             )
         )
-        # print('truth_params_with_parameter_layout_keys:', truth_params.keys())
+    else:
+        epl = _legacy_epl_like_kw(kwargs_lens)
+        shear = _legacy_shear_kw(kwargs_lens)
+        truth_params = {
+            "lens_theta_E": float(epl["theta_E"]),
+            "lens_e1": float(epl["e1"]),
+            "lens_e2": float(epl["e2"]),
+            "lens_gamma": float(epl["gamma"]) if "gamma" in epl else 2.0,
+            "lens_gamma1": float(shear["gamma1"]),
+            "lens_gamma2": float(shear["gamma2"]),
+            "lens_center_x": float(epl["center_x"]),
+            "lens_center_y": float(epl["center_y"]),
+            **common_truth,
+        }
 
     return {
         "cfg": cfg_full,
@@ -574,9 +650,9 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
     # Update truth params with GW observables used by the prob models.
     truth_params = dict(ctx.get("truth_params", {}))
 
-    # Parse lens mass parameters from the lens kwargs we used for the GW simulation.
-    # ProbModel_GW_only includes these keys in its priors/trace.
-    if "kwargs_lens" in ctx:
+    # Legacy flat mass keys (EPL+shear); skipped when using parameter layout (mass truth is
+    # ``lens0_*`` / … from ``truth_vector_from_kwargs`` below).
+    if "kwargs_lens" in ctx and not cfg_full.get("use_parameter_layout"):
         kwargs_lens = ctx["kwargs_lens"]
         epl = _legacy_epl_like_kw(kwargs_lens)
         shear = _legacy_shear_kw(kwargs_lens)
@@ -654,6 +730,49 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
     return ctx
 
 
+def _resolve_gw_n_images(ctx: Dict[str, Any], cfg_full: Dict[str, Any]) -> int:
+    """Canonical GW image count (same rules as ``run_inference`` / ``setup_gw_observation``)."""
+    import jax.numpy as jnp
+
+    truth_params = ctx.get("truth_params", {}) or {}
+    n_images_cfg = int(cfg_full["gw"]["n_images"])
+    x_img_gw_ctx = ctx.get("x_img_gw")
+    n_from_x = int(jnp.asarray(x_img_gw_ctx).size) if x_img_gw_ctx is not None else 0
+    n_from_truth = sum(1 for k in truth_params if k.startswith("image_x") and k[7:].isdigit())
+    gw_obs_ctx = ctx.get("gw_obs") or {}
+    dle = gw_obs_ctx.get("dL_eff")
+    n_from_dle = int(jnp.asarray(dle).size) if dle is not None else 0
+
+    if n_from_x > 0:
+        n_images = n_from_x
+        if n_from_truth > 0 and n_from_truth != n_images:
+            raise ValueError(
+                f"Inconsistent context: len(ctx['x_img_gw'])={n_images} but truth_params has "
+                f"{n_from_truth} image_x* entries. Re-run `setup_gw_observation` or fix ctx."
+            )
+        if n_from_dle > 0 and n_from_dle != n_images:
+            raise ValueError(
+                f"Inconsistent context: len(ctx['x_img_gw'])={n_images} but gw_obs['dL_eff'] "
+                f"has length {n_from_dle}. Re-run `setup_gw_observation` or fix ctx."
+            )
+        if n_images_cfg != n_images:
+            import warnings
+
+            warnings.warn(
+                f"cfg['gw']['n_images']={n_images_cfg} does not match len(ctx['x_img_gw'])="
+                f"{n_images}. Using the latter so the prob model matches the simulated images.",
+                UserWarning,
+                stacklevel=3,
+            )
+    elif n_from_truth > 0:
+        n_images = n_from_truth
+    elif n_from_dle > 0:
+        n_images = n_from_dle
+    else:
+        n_images = n_images_cfg
+    return n_images
+
+
 def run_inference(
     ctx: Dict[str, Any],
     *,
@@ -707,7 +826,9 @@ def run_inference(
     priors_user = cfg_full.get("priors", {})
     priors_user_norm = _normalize_priors_overrides(priors_user, jnp=jnp, numpyro=numpyro, dist=dist)
 
-    n_images = int(cfg_full["gw"]["n_images"])
+    truth_params = ctx.get("truth_params", {}) or {}
+    n_images = _resolve_gw_n_images(ctx, cfg_full)
+
     half_width = float(cfg_full["gw"]["image_box_half_width"])
     gw_error_scales = cfg_full["gw"].get("error_scales", {})
     # Pass GW error scales only when user explicitly overrides them in cfg.
@@ -720,7 +841,6 @@ def run_inference(
 
     # Internal priors can be injected for special cases; keep empty by default
     # so model defaults remain fully active unless user overrides explicitly.
-    truth_params = ctx.get("truth_params", {})
     priors_internal: Dict[str, Any] = {}
 
     # Tight image-position priors for GW-only (GW prob model uses flat min/max unless
@@ -777,7 +897,9 @@ def run_inference(
                 lens_image=ctx["lens_image"],
                 user_priors=priors_user_norm,
             )
-            priors_flex = {**priors_reg, **priors_internal, **priors_image_pos}
+            priors_flex = _merge_flex_priors_with_gw_image_pos(
+                priors_reg, priors_internal, priors_image_pos, priors_user_norm
+            )
             x_true = [truth_params[f"image_x{i+1}"] for i in range(n_images)]
             y_true = [truth_params[f"image_y{i+1}"] for i in range(n_images)]
             image_position_priors_override = {
@@ -807,7 +929,9 @@ def run_inference(
                 mass_model=ctx["lens_mass_model"],
                 user_priors=priors_user_norm,
             )
-            priors_flex = {**priors_reg, **priors_internal, **priors_image_pos}
+            priors_flex = _merge_flex_priors_with_gw_image_pos(
+                priors_reg, priors_internal, priors_image_pos, priors_user_norm
+            )
             probmodel = FlexProbModelGWOnly(
                 entries,
                 priors_flex,
@@ -878,13 +1002,20 @@ def run_inference(
             priors=priors_combined,
         )
 
-    # Keys to include and expansion point.
+    # Keys to include and expansion point. Fixed literals in ``cfg['priors']`` are held at those
+    # values in ``input_params`` but omitted from ``keys_to_include`` so Fisher / deriv-approx does
+    # not differentiate w.r.t. them (matches EM+GW behavior where user priors override image boxes).
+    fixed_literal_keys = _fixed_literal_prior_keys(priors_user)
     prior_sample = probmodel.get_sample(prng_key=jax.random.PRNGKey(int(cfg_full["inference"]["prior_sample_rng_key"])))
-    keys_to_include = list(prior_sample.keys())
+    keys_all = list(prior_sample.keys())
+    keys_to_include = [k for k in keys_all if k not in fixed_literal_keys]
+
     input_params: Dict[str, Any] = {}
     missing = []
-    for k in keys_to_include:
-        if k in truth_params:
+    for k in keys_all:
+        if k in fixed_literal_keys:
+            input_params[k] = _float_from_user_prior_literal(priors_user[k])
+        elif k in truth_params:
             input_params[k] = truth_params[k]
         else:
             missing.append(k)
@@ -894,7 +1025,6 @@ def run_inference(
             + ", ".join(missing)
             + ". Provide these via `cfg['priors']` (and re-run setup), or ensure simulation truth matches."
         )
-    print('input_params:', input_params)
     u0 = jnp.asarray([input_params[k] for k in keys_to_include], dtype=jnp.float64)
 
     approx_logp, logp0, g0, H0, F0, Q0 = compute_fisher(
@@ -923,7 +1053,7 @@ def run_inference(
             print(f"Hessian diagonal H[{key},{key}] is inf")
         elif hi == 0:
             print(f"Hessian diagonal H[{key},{key}] is zero")
-    truths_dict = {k: float(input_params[k]) for k in keys_to_include}
+    truths_dict = {k: float(input_params[k]) for k in keys_all}
 
     # Fisher-only: sample from Gaussian N(u0, cov)
     priors_for_fisher = priors_flex if priors_flex is not None else priors_combined
@@ -1147,8 +1277,17 @@ def to_source_plane_samples(
     This wraps `image_samples_to_source_samples` and returns a dict containing
     `y0gw`, `y1gw`, and a `source_plane_samples` dictionary ready for plotting.
 
+    The number of lensed images is taken from the GW context (``len(ctx['x_img_gw'])`` when
+    present, else truth / ``gw_obs['dL_eff']`` / ``cfg['gw']['n_images']``) — the same rule
+    as ``run_inference``, not from ``cfg['source_plane']['n_images']``.
+
+    Missing ``image_x*`` / ``image_y*`` entries (e.g. fixed in ``cfg['priors']`` so they were
+    not MCMC-sampled) are broadcast to all samples from fixed ``cfg['priors']``, ``truth_params``,
+    or ``ctx['x_img_gw']`` / ``ctx['y_img_gw']``, like lens parameters. Those filled keys are
+    stripped from the returned ``source_plane_samples`` dicts so they do not look like posterior
+    draws.
+
     Config options (under `cfg['source_plane']`, all optional):
-      - n_images: int
       - n_subsample: int or None
       - seed: int
       - filter_std: float or None
@@ -1166,7 +1305,11 @@ def to_source_plane_samples(
             `image_samples_to_source_samples(...)`. Keep as None for default
             EPL+SHEAR handling.
     """
-    cfg_full = _deep_merge_dict(make_default_cfg(), cfg)
+    # Same merge order as ``run_inference``: start from ``ctx['cfg']`` (setup
+    # choices like ``gw['n_images']``), then apply the call-time ``cfg``.
+    # Using only ``make_default_cfg()`` here would drop e.g. ``n_images: 2``
+    # when the user passes only ``cfg={'output': ...}``.
+    cfg_full = _deep_merge_dict(ctx.get("cfg", make_default_cfg()), cfg)
     sp_cfg = cfg_full.get("source_plane", {})
     priors_cfg = cfg_full.get("priors", {})
 
@@ -1178,7 +1321,7 @@ def to_source_plane_samples(
             "calling `to_source_plane_samples(...)`."
         )
 
-    n_images = int(sp_cfg.get("n_images", cfg_full["gw"]["n_images"]))
+    n_images = _resolve_gw_n_images(ctx, cfg_full)
 
     use_layout = bool(cfg_full.get("use_parameter_layout", False))
     build_fn = build_kwargs_lens_vectorised_fn
@@ -1256,10 +1399,39 @@ def to_source_plane_samples(
                 "Provide it in sampled parameters, fixed cfg['priors'], or truth_params."
             )
         sample_dict_for_source[k] = jnp.full((n_samps,), float(value))
-    # Track which keys were auto-filled from fixed values (not sampled).
-    auto_filled_fixed_keys = {
-        k for k in required_lens_keys if k not in samples and k in sample_dict_for_source
-    }
+
+    x_img_ctx = ctx.get("x_img_gw")
+    y_img_ctx = ctx.get("y_img_gw")
+    for i in range(1, n_images + 1):
+        xk, yk = f"image_x{i}", f"image_y{i}"
+        for k in (xk, yk):
+            if k in sample_dict_for_source:
+                continue
+            value = None
+            if k in priors_cfg:
+                pv = priors_cfg[k]
+                if not callable(pv) and not isinstance(pv, dist.Distribution):
+                    value = pv
+            if value is None and k in truth_params:
+                value = truth_params[k]
+            if value is None and x_img_ctx is not None and k == xk and i - 1 < len(x_img_ctx):
+                value = float(x_img_ctx[i - 1])
+            if value is None and y_img_ctx is not None and k == yk and i - 1 < len(y_img_ctx):
+                value = float(y_img_ctx[i - 1])
+            if value is None:
+                raise ValueError(
+                    f"Missing '{k}' for source-plane ray shooting (image {i} of {n_images}). "
+                    "Include it in MCMC samples, set a fixed value in cfg['priors'], put it in "
+                    "truth_params, or ensure ctx['x_img_gw']/['y_img_gw'] covers this image."
+                )
+            sample_dict_for_source[k] = jnp.full((n_samps,), float(value))
+
+    # Keys auto-filled from fixed values (not sampled) — drop from returned source-plane dicts.
+    auto_filled_fixed_keys = {k for k in required_lens_keys if k not in samples}
+    for i in range(1, n_images + 1):
+        for k in (f"image_x{i}", f"image_y{i}"):
+            if k not in samples:
+                auto_filled_fixed_keys.add(k)
 
     result = image_samples_to_source_samples(
         sample_dict=sample_dict_for_source,

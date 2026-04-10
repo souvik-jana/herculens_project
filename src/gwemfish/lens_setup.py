@@ -10,7 +10,12 @@ from jaxtronomy.LensModel.lens_model import LensModel
 from jaxtronomy.LensModel.Solver.lens_equation_solver import LensEquationSolver
 from herculens.MassModel.mass_model import MassModel
 from .mass_sheet_model import MassModelMassSheet
-from .config import SOLVER_PARAMS
+from .config import (
+    HELEN_LENS_SOLVER_PARAM_KEYS,
+    IMAGE_POSITION_SOLVER_DEFAULTS,
+    LENSTRONOMY_GRID_KWARGS,
+    SOLVER_PARAMS,
+)
 
 # Import helens solver if available
 try:
@@ -19,6 +24,27 @@ try:
 except ImportError:
     HELENS_AVAILABLE = False
     LensEquationSolver_helens = None
+
+
+def _merge_image_position_solver_kwargs(solver_params=None):
+    """Build kwargs for jaxtronomy ``LensEquationSolver.image_position_from_source``.
+
+    Merges ``IMAGE_POSITION_SOLVER_DEFAULTS`` with user ``solver_params``, ignoring
+    Helens-only keys (``nsolutions``, ``niter``, …). Returns
+    ``(solver_kind, kwargs)`` where ``solver_kind`` is ``\"lenstronomy\"`` or
+    ``\"analytical\"``.
+    """
+    merged = {**IMAGE_POSITION_SOLVER_DEFAULTS, **(solver_params or {})}
+    filtered = {
+        k: v
+        for k, v in merged.items()
+        if k not in HELEN_LENS_SOLVER_PARAM_KEYS
+    }
+    solver_kind = filtered.pop("solver", "lenstronomy")
+    if solver_kind == "analytical":
+        for gk in LENSTRONOMY_GRID_KWARGS:
+            filtered.pop(gk, None)
+    return solver_kind, filtered
 
 
 def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos, 
@@ -35,7 +61,11 @@ def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos,
         zl: Lens redshift
         zs: Source redshift
         source_pos: Tuple (x, y) of source position in arcsec
-        solver_params: Optional solver parameters dict. If None, uses defaults.
+        solver_params: Optional dict merged with ``IMAGE_POSITION_SOLVER_DEFAULTS``.
+            Set ``solver`` to ``\"lenstronomy\"`` (default: grid search + root finder)
+            or ``\"analytical\"`` (EPL/SIE ± shear only; see jaxtronomy). Keys such as
+            ``min_distance``, ``search_window`` apply to the Lenstronomy solver;
+            Helens-only keys (``nsolutions``, ``niter``, …) are ignored.
     
     Returns: 
         kwargs_lens: List of lens kwargs (same as input, for consistency)
@@ -44,8 +74,8 @@ def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos,
         lens_mass_model: hcl.MassModel instance for use in herculens
     """
     if solver_params is None:
-        solver_params = SOLVER_PARAMS.copy()
-    
+        solver_params = {**IMAGE_POSITION_SOLVER_DEFAULTS, **SOLVER_PARAMS}
+
     # Create herculens MassModel
     lens_mass_model = MassModel(lens_model_list)
     
@@ -73,16 +103,13 @@ def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos,
     source_x_float = float(source_x)
     source_y_float = float(source_y)
     
-    # Solve for image positions
+    solver_kind, img_kw = _merge_image_position_solver_kwargs(solver_params)
     x_image_true, y_image_true = solver_lenstronomy.image_position_from_source(
-        kwargs_lens=kwargs_lens_fixed,
-        sourcePos_x=source_x_float,
-        sourcePos_y=source_y_float,
-        min_distance=0.01,
-        search_window=15,
-        precision_limit=1e-10,
-        num_iter_max=1200,
-        solver='lenstronomy'
+        source_x_float,
+        source_y_float,
+        kwargs_lens_fixed,
+        solver=solver_kind,
+        **img_kw,
     )
     
     # Convert to JAX arrays
@@ -155,7 +182,7 @@ def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos,
 def setup_lens_mst(lens_model_list, kwargs_lens, zl, zs, source_pos,
                    solver_params=None, kappa0=0.0):
     if solver_params is None:
-        solver_params = SOLVER_PARAMS.copy()
+        solver_params = {**IMAGE_POSITION_SOLVER_DEFAULTS, **SOLVER_PARAMS}
 
     import copy
     kwargs_lens_original = copy.deepcopy(kwargs_lens)
@@ -199,15 +226,13 @@ def setup_lens_mst(lens_model_list, kwargs_lens, zl, zs, source_pos,
     source_x_float = float(source_pos[0])
     source_y_float = float(source_pos[1])
 
+    solver_kind, img_kw = _merge_image_position_solver_kwargs(solver_params)
     x_image_true, y_image_true = solver_lenstronomy.image_position_from_source(
-        kwargs_lens=kwargs_lens_fixed,
-        sourcePos_x=source_x_float,
-        sourcePos_y=source_y_float,
-        min_distance=solver_params.get('min_distance', 0.01),
-        search_window=solver_params.get('search_window', 15),
-        precision_limit=solver_params.get('precision_limit', 1e-10),
-        num_iter_max=solver_params.get('num_iter_max', 1200),
-        solver='lenstronomy'
+        source_x_float,
+        source_y_float,
+        kwargs_lens_fixed,
+        solver=solver_kind,
+        **img_kw,
     )
 
     x_image_true = jnp.array(x_image_true)
