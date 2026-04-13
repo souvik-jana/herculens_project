@@ -62,9 +62,11 @@ class FlexProbModelEMGW(hcl.NumpyroModel):
         image_position_priors: Optional[Dict[str, Any]] = None,
         gw_error_scales: Optional[Dict[str, Any]] = None,
         extra_priors: Optional[Dict[str, Callable[[], Any]]] = None,
+        use_mst: bool = False,
     ):
         self.entries = list(entries)
         self.priors = {**(_default_extra_priors_em_gw()), **(extra_priors or {}), **priors}
+        self.use_mst = bool(use_mst)
         self.n_mass = len(lens_image.MassModel.func_list)
         self.n_source = len(lens_image.SourceModel.func_list)
         self.n_lens_light = len(lens_image.LensLightModel.func_list)
@@ -116,8 +118,9 @@ class FlexProbModelEMGW(hcl.NumpyroModel):
         )
 
         T_star, dL = flat["T_star"], flat["dL"]
+        k_mst_kw = p["k_mst"]() if self.use_mst else None
         (_, model_time_delays, _, model_dL_eff, _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
-            x_pos_array, y_pos_array, kl, self.lens_gw, T_star, dL
+            x_pos_array, y_pos_array, kl, self.lens_gw, T_star, dL, k_mst=k_mst_kw
         )
 
         gw_obs = self.gw_observations
@@ -166,7 +169,10 @@ class FlexProbModelEMGW(hcl.NumpyroModel):
 
     def all_flat_keys(self) -> List[str]:
         base = flat_keys(self.entries)
-        return base + ["noise_sigma_bkg", "T_star", "dL"] + [
+        extra = ["noise_sigma_bkg", "T_star", "dL"]
+        if self.use_mst:
+            extra.append("k_mst")
+        return base + extra + [
             f"image_x{i+1}" for i in range(self.n_images)
         ] + [f"image_y{i+1}" for i in range(self.n_images)]
 
@@ -234,9 +240,11 @@ class FlexProbModelGWOnly(hcl.NumpyroModel):
         image_position_priors: Optional[Dict[str, Any]] = None,
         gw_error_scales: Optional[Dict[str, Any]] = None,
         extra_priors: Optional[Dict[str, Callable[[], Any]]] = None,
+        use_mst: bool = False,
     ):
         self.entries = list(entries)
         self.priors = {**(_default_extra_priors_gw_only()), **(extra_priors or {}), **priors}
+        self.use_mst = bool(use_mst)
         self.n_mass = len(lens_gw.mass_model.func_list)
         self.n_images = n_images
         self.gw_observations = gw_observations or {}
@@ -273,8 +281,9 @@ class FlexProbModelGWOnly(hcl.NumpyroModel):
             self.n_images, self.priors, self.image_position_priors
         )
         T_star, dL = flat["T_star"], flat["dL"]
+        k_mst_kw = p["k_mst"]() if self.use_mst else None
         (_, model_time_delays, _, model_dL_eff, _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
-            x_pos_array, y_pos_array, kl, self.lens_gw, T_star, dL
+            x_pos_array, y_pos_array, kl, self.lens_gw, T_star, dL, k_mst=k_mst_kw
         )
 
         gw_obs = self.gw_observations
@@ -305,6 +314,9 @@ class FlexProbModelGWOnly(hcl.NumpyroModel):
 
     def all_flat_keys(self) -> List[str]:
         base = flat_keys(self.entries)
-        return base + ["T_star", "dL"] + [f"image_x{i+1}" for i in range(self.n_images)] + [
+        extra = ["T_star", "dL"]
+        if self.use_mst:
+            extra.append("k_mst")
+        return base + extra + [f"image_x{i+1}" for i in range(self.n_images)] + [
             f"image_y{i+1}" for i in range(self.n_images)
         ]

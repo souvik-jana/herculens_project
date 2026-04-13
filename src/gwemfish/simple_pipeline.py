@@ -229,6 +229,10 @@ def make_default_cfg() -> Dict[str, Any]:
             },
             # For GW-only we constrain each image_x/i and image_y/i by a uniform box around truth.
             "image_box_half_width": 0.6,
+            # Mass sheet transform (MST): if True, ``setup_gw_observation`` uses ``simulate_gw_mst``
+            # with convergence ``k_mst``; inference adds a ``k_mst`` site unless set in ``cfg['priors']``.
+            "use_mst": False,
+            "k_mst": 0.0,
         },
         "lens": {
             "lens_model_list": DEFAULT_LENS_MODEL_LIST,
@@ -599,7 +603,7 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
     cfg_full = _deep_merge_dict(make_default_cfg(), cfg)
 
     from .lens_setup import setup_lens
-    from .data_sim import simulate_gw
+    from .data_sim import simulate_gw, simulate_gw_mst
     from .jaxcosmo import JAXCosmology
 
     if not cfg_full["gw"]["enabled"]:
@@ -634,15 +638,30 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
 
     cosmology = JAXCosmology(**gw_cfg["cosmology"])
 
-    x_img_gw, y_img_gw, gw_obs, data_GW, lens_gw = simulate_gw(
-        source_pos=gw_cfg["source_pos"],
-        kwargs_lens=ctx["kwargs_lens"],
-        lens_mass_model=ctx["lens_mass_model"],
-        cosmology=cosmology,
-        zl=lens_cfg["zl"],
-        zs=lens_cfg["zs"],
-        lens_model_list=ctx.get("lens_model_list", lens_cfg["lens_model_list"]),
-    )
+    use_mst = bool(gw_cfg.get("use_mst", False))
+    k_mst = float(gw_cfg.get("k_mst", 0.0))
+    if use_mst:
+        x_img_gw, y_img_gw, gw_obs, data_GW, lens_gw = simulate_gw_mst(
+            source_pos=gw_cfg["source_pos"],
+            kwargs_lens=ctx["kwargs_lens"],
+            lens_mass_model=ctx["lens_mass_model"],
+            cosmology=cosmology,
+            zl=lens_cfg["zl"],
+            zs=lens_cfg["zs"],
+            k_mst=k_mst,
+            lens_model_list=ctx.get("lens_model_list", lens_cfg["lens_model_list"]),
+            solver_params=gw_cfg.get("solver_params"),
+        )
+    else:
+        x_img_gw, y_img_gw, gw_obs, data_GW, lens_gw = simulate_gw(
+            source_pos=gw_cfg["source_pos"],
+            kwargs_lens=ctx["kwargs_lens"],
+            lens_mass_model=ctx["lens_mass_model"],
+            cosmology=cosmology,
+            zl=lens_cfg["zl"],
+            zs=lens_cfg["zs"],
+            lens_model_list=ctx.get("lens_model_list", lens_cfg["lens_model_list"]),
+        )
 
     dL_true = cosmology.luminosity_distance(lens_cfg["zs"])
     T_star_true = data_GW["Tstar_in_seconds"]
@@ -678,6 +697,9 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
     for i in range(len(x_img_gw)):
         truth_params[f"image_x{i+1}"] = float(x_img_gw[i])
         truth_params[f"image_y{i+1}"] = float(y_img_gw[i])
+
+    if use_mst:
+        truth_params["k_mst"] = k_mst
 
     if cfg_full.get("use_parameter_layout"):
         from .parameter_layout import build_mass_parameter_entries, build_parameter_layout, truth_vector_from_kwargs
@@ -725,6 +747,8 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
             "y_img_gw": y_img_gw,
             "truth_params": truth_params,
             "n_images": gw_cfg["n_images"],
+            "use_mst": use_mst,
+            "k_mst": k_mst if use_mst else 0.0,
         }
     )
     return ctx
@@ -793,6 +817,11 @@ def run_inference(
     matrix). Plain NUTS on the full model is ``method='hmc'`` only; ``informed=False`` is not valid here.
 
     ``compute_fisher`` always uses the full model to build ``H0`` at the expansion point.
+
+    **Mass sheet (MST)** — Set ``cfg['gw']['use_mst']=True`` and ``cfg['gw']['k_mst']`` (simulation
+    truth) in ``setup_gw_observation``; for inference, ``run_inference`` adds a default ``k_mst``
+    uniform prior unless ``cfg['priors']['k_mst']`` is set. GW forward uses ``LensImageGW.compute_mst``
+    so ``k_mst`` is JAX-traceable.
     """
     if mode not in ("EM+GW", "GW-only", "EM-only"):
         raise ValueError("mode must be one of: 'EM+GW', 'GW-only', 'EM-only'")
@@ -842,6 +871,13 @@ def run_inference(
     # Internal priors can be injected for special cases; keep empty by default
     # so model defaults remain fully active unless user overrides explicitly.
     priors_internal: Dict[str, Any] = {}
+
+    gw_cfg_inf = cfg_full.get("gw", {}) or {}
+    use_mst = bool(gw_cfg_inf.get("use_mst", ctx.get("use_mst", False)))
+    if use_mst and mode in ("EM+GW", "GW-only") and "k_mst" not in priors_user_norm:
+        priors_internal["k_mst"] = lambda: numpyro.sample(
+            "k_mst", dist.Uniform(-0.98, 0.98)
+        )
 
     # Tight image-position priors for GW-only (GW prob model uses flat min/max unless
     # image_x/i keys exist in the priors registry).
@@ -919,6 +955,7 @@ def run_inference(
                 noise=ctx["noise_inf"],
                 image_position_priors=image_position_priors_override,
                 gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+                use_mst=use_mst,
             )
         elif mode == "GW-only":
             entries = build_mass_parameter_entries(
@@ -939,6 +976,7 @@ def run_inference(
                 gw_observations=ctx["gw_obs"],
                 lens_gw=ctx["lens_gw"],
                 gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+                use_mst=use_mst,
             )
         else:
             em_local = cfg_full.get("em") or {}
@@ -985,6 +1023,7 @@ def run_inference(
             priors=priors_combined,
             image_position_priors=image_position_priors_override,
             gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+            use_mst=use_mst,
         )
     elif mode == "GW-only":
         probmodel = ProbModel_GW_only(
@@ -993,6 +1032,7 @@ def run_inference(
             lens_gw=ctx["lens_gw"],
             priors=priors_combined,
             gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+            use_mst=use_mst,
         )
     else:  # EM-only
         probmodel = ProbModel_EM_only(
@@ -1026,7 +1066,13 @@ def run_inference(
             + ". Provide these via `cfg['priors']` (and re-run setup), or ensure simulation truth matches."
         )
     u0 = jnp.asarray([input_params[k] for k in keys_to_include], dtype=jnp.float64)
-
+    # --- DEBUG ---
+    print("use_mst in probmodel:", probmodel.use_mst)
+    print("k_mst in keys_to_include:", "k_mst" in keys_to_include)
+    print("k_mst truth:", ctx["truth_params"].get("k_mst"))
+    print("keys_to_include:", keys_to_include)
+    print("input_params:", {k: input_params[k] for k in keys_to_include})
+# --- END DEBUG ---
     approx_logp, logp0, g0, H0, F0, Q0 = compute_fisher(
         model=probmodel.model,
         input_params=input_params,
@@ -1442,6 +1488,26 @@ def to_source_plane_samples(
         seed=int(sp_cfg.get("seed", 42)),
         filter_std=sp_cfg.get("filter_std"),
     )
+
+    # Apply MST scaling to source positions if k_mst was sampled
+    if "k_mst" in sample_dict_for_source:
+        k_mst_samples = jnp.asarray(sample_dict_for_source["k_mst"])
+        result["source_plane_samples"]["y0gw"] = (
+            result["source_plane_samples"]["y0gw"] * (1.0 - k_mst_samples)
+        )
+        result["source_plane_samples"]["y1gw"] = (
+            result["source_plane_samples"]["y1gw"] * (1.0 - k_mst_samples)
+        )
+        result["y0gw_all"] = result["y0gw_all"] * (1.0 - k_mst_samples[:, None])
+        result["y1gw_all"] = result["y1gw_all"] * (1.0 - k_mst_samples[:, None])
+        result["y0gw_mean"] = result["y0gw_mean"] * (1.0 - k_mst_samples)
+        result["y1gw_mean"] = result["y1gw_mean"] * (1.0 - k_mst_samples)
+        if "source_plane_samples_filtered" in result:
+            mask = result["consistent_mask"]
+            k_filtered = k_mst_samples[mask]
+            result["source_plane_samples_filtered"]["y0gw"] *= (1.0 - k_filtered)
+            result["source_plane_samples_filtered"]["y1gw"] *= (1.0 - k_filtered)
+
 
     # Remove auto-filled fixed lens keys from returned source-plane sample dicts.
     # They are needed internally for ray-shooting, but should not appear as posterior samples.

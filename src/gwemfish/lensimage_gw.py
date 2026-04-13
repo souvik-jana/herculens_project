@@ -1,6 +1,4 @@
 # Finalized GW lensing helper for numpyro: init with MassModel only; pass D_dt per call
-from functools import partial
-import jax
 import jax.numpy as jnp
 import herculens as hcl
 # import astropy.units as u
@@ -10,6 +8,8 @@ arcsecond_to_radians = 4.84813681109536e-06  #(1*u.arcsecond).to(u.radian).value
 Mpc_to_m = 3.085677581491367e+22  #float(1*u.Mpc.to(u.m))
 c = 299792458.0  #float(const.c.value)
 seconds_to_days = 1.1574074074074073e-05  #float(1*u.s.to(u.day))
+
+
 class LensImageGW:
     """
     Minimal JAX/numpyro-compatible wrapper around a provided herculens MassModel.
@@ -98,6 +98,58 @@ class LensImageGW:
             'tarrivals_days': tarrivals*seconds_to_days,
             'time_delays_in_seconds': jnp.diff(tarrivals),
             'time_delays_in_days': jnp.diff(tarrivals)*seconds_to_days,
+        }
+
+    def compute_mst(self, x, y, kwargs_lens, D_dt, k_mst):
+        """Same as ``compute`` but with uniform mass sheet (MST) convergence ``k_mst`` (traceable).
+
+        Matches ``MassModelMassSheet`` with ``kappa0=k_mst``: scaled parent potential/deflection
+        plus a convergence sheet. ``k_mst`` may be a JAX tracer (e.g. numpyro sample).
+        """
+        mm = self.mass_model
+        psi_p = mm.potential(x, y, kwargs_lens)
+        ax, ay = mm.alpha(x, y, kwargs_lens)
+        fxx, fxy, fyx, fyy = mm.hessian(x, y, kwargs_lens)
+
+        psi = (1.0 - k_mst) * psi_p + 0.5 * k_mst * (x * x + y * y)
+        ax_m = (1.0 - k_mst) * ax + k_mst * x
+        ay_m = (1.0 - k_mst) * ay + k_mst * y
+        fxx_m = (1.0 - k_mst) * fxx + k_mst
+        fxy_m = (1.0 - k_mst) * fxy
+        fyx_m = (1.0 - k_mst) * fyx
+        fyy_m = (1.0 - k_mst) * fyy + k_mst
+
+        beta_x = x - ax_m
+        beta_y = y - ay_m
+        det_A = (1.0 - fxx_m) * (1.0 - fyy_m) - fxy_m * fyx_m
+        mu = 1.0 / det_A
+
+        geom = ((x - beta_x) ** 2 + (y - beta_y) ** 2) / 2.0
+        phi = geom - psi
+
+        phi_in_radianssq = phi * arcsecond_to_radians**2
+        D_dt_in_m = D_dt * Mpc_to_m
+        tarrivals = (D_dt_in_m / c) * phi_in_radianssq
+        Tstar = ((D_dt * Mpc_to_m) / c) * arcsecond_to_radians**2
+
+        idx = jnp.argsort(phi)
+        phi = phi[idx]
+        tarrivals = tarrivals[idx]
+        beta_x = beta_x[idx]
+        beta_y = beta_y[idx]
+        psi = psi[idx]
+        mu = mu[idx]
+        return {
+            'beta_x': beta_x,
+            'beta_y': beta_y,
+            'psi': psi,
+            'mu': mu,
+            'phi_in_arcsecsq': phi,
+            'Tstar_in_seconds': Tstar,
+            'tarrivals_in_seconds': tarrivals,
+            'tarrivals_days': tarrivals * seconds_to_days,
+            'time_delays_in_seconds': jnp.diff(tarrivals),
+            'time_delays_in_days': jnp.diff(tarrivals) * seconds_to_days,
         }
 
 # Notebook-side helper (commented):

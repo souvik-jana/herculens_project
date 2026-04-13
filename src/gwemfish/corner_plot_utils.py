@@ -426,7 +426,7 @@ def create_default_param_groups(
     param_groups = {
         'lens_light':         [k for k in samples_dict.keys() if _is_lens_light_key(k)],
         'source_light':       [k for k in samples_dict.keys() if _is_source_light_key(k)],
-        'lens_mass':          [k for k in samples_dict.keys() if _is_lens_mass_key(k)],
+        'lens_mass':          [k for k in samples_dict.keys() if _is_lens_mass_key(k)or k == 'k_mst'],
         'cosmology_params':   [k for k in samples_dict.keys() if k in ['T_star', 'dL']],
         'GW_image_positions': [k for k in samples_dict.keys()
                                if k in ['image_x1', 'image_y1', 'image_x2', 'image_y2',

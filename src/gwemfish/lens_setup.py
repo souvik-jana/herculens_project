@@ -9,7 +9,6 @@ import jax.numpy as jnp
 from jaxtronomy.LensModel.lens_model import LensModel
 from jaxtronomy.LensModel.Solver.lens_equation_solver import LensEquationSolver
 from herculens.MassModel.mass_model import MassModel
-from .mass_sheet_model import MassModelMassSheet
 from .config import (
     HELEN_LENS_SOLVER_PARAM_KEYS,
     IMAGE_POSITION_SOLVER_DEFAULTS,
@@ -180,27 +179,39 @@ def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos,
 #     return kwargs_lens, x_image_true, y_image_true, lens_mass_model
 
 def setup_lens_mst(lens_model_list, kwargs_lens, zl, zs, source_pos,
-                   solver_params=None, kappa0=0.0):
+                   solver_params=None, k_mst=0.0, kappa0=None):
+    """Solve image positions under MST (lenstronomy: scaled masses + CONVERGENCE).
+
+    Returns **plain** ``MassModel`` so GW inference can treat ``k_mst`` as a traced
+    argument in ``LensImageGW.compute_mst``; simulation uses the same ``k_mst``.
+    ``kappa0`` is a deprecated alias for ``k_mst``.
+    """
+    if kappa0 is not None:
+        k_mst = float(kappa0)
     if solver_params is None:
         solver_params = {**IMAGE_POSITION_SOLVER_DEFAULTS, **SOLVER_PARAMS}
 
     import copy
     kwargs_lens_original = copy.deepcopy(kwargs_lens)
 
-    # Herculens — MassModelMassSheet handles MST internally
-    lens_mass_model = MassModelMassSheet(lens_model_list, kappa0=kappa0)
+    # Inference uses plain MassModel + ``compute_mst(..., k_mst)`` for a JAX-traced sheet.
+    lens_mass_model = MassModel(lens_model_list)
 
     # Lenstronomy — scale theta_E + add CONVERGENCE, no source scaling
     kwargs_lens_lenstronomy = copy.deepcopy(kwargs_lens)
 
-    if kappa0 != 0.0:
+    if k_mst != 0.0:
         for kw in kwargs_lens_lenstronomy:
             for param in ['theta_E', 'r_core', 'r_trunc', 'Rs', 'sigma0']:
                 if param in kw:
-                    kw[param] = kw[param] * (1 - kappa0)
+                    kw[param] = kw[param] * (1 - k_mst)
+            # Scale shear parameters too
+            for param in ['gamma1', 'gamma2']:
+                if param in kw:
+                    kw[param] = kw[param] * (1 - k_mst)
 
         lens_model_list_lenstronomy = lens_model_list + ['CONVERGENCE']
-        kwargs_lens_lenstronomy     = kwargs_lens_lenstronomy + [{'kappa': kappa0}]
+        kwargs_lens_lenstronomy = kwargs_lens_lenstronomy + [{'kappa': k_mst}]
     else:
         lens_model_list_lenstronomy = lens_model_list
 

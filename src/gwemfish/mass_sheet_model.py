@@ -11,8 +11,10 @@ class MassModelMassSheet(MassModel):
 
     def __init__(self, profile_list, use_jax_scan=False, verbose=False, **kwargs):
         super().__init__(profile_list, use_jax_scan=use_jax_scan, verbose=verbose)
-        # Add mass sheet convergence as an attribute
-        self.kappa0 = kwargs.get('kappa0', 0.0)  # default value for mass sheet convergence
+        # Mass-sheet convergence (MST); ``k_mst`` is an alias for ``kappa0``.
+        self.kappa0 = float(
+            kwargs.get("kappa0", kwargs.get("k_mst", 0.0))
+        )
 
     def potential(self, x, y, kwargs, k=None):
         psi = super().potential(x, y, kwargs, k=k)

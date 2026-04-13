@@ -98,7 +98,7 @@ class ProbModel(hcl.NumpyroModel):
     def __init__(self, n_images=4, gw_observations=None, em_observations=None,
                  lens_image=None, lens_gw=None, noise=None,
                  priors=None, image_position_priors=None, image_positions=None,
-                 gw_error_scales=None):
+                 gw_error_scales=None, use_mst: bool = False):
         """
         Args:
             n_images:        Number of lensed images.
@@ -114,6 +114,7 @@ class ProbModel(hcl.NumpyroModel):
             image_positions: Legacy alias for image_position_priors (kept for compatibility).
             gw_error_scales: Optional dict scaling GW likelihood uncertainties.
                              Keys: 'sigma_td', 'sigma_dL_eff', 'epsilon'.
+            use_mst:         If True, include mass-sheet parameter ``k_mst`` in GW forward model.
         """
         self.n_images        = n_images
         self.gw_observations = gw_observations or {}
@@ -121,6 +122,7 @@ class ProbModel(hcl.NumpyroModel):
         self.lens_image      = lens_image
         self.lens_gw         = lens_gw
         self.noise           = noise
+        self.use_mst         = bool(use_mst)
         self.pix_scl         = 0.4
         self.priors          = {**_make_default_priors_em_gw(self.pix_scl), **(priors or {})}
         if image_positions is not None and image_position_priors is None:
@@ -198,9 +200,10 @@ class ProbModel(hcl.NumpyroModel):
             self.n_images, self.priors, self.image_position_priors)
 
         # --- GW likelihood ---
+        k_mst_kw = p["k_mst"]() if self.use_mst else None
         (_, model_time_delays, _, model_dL_eff,
          _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
-            x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL)
+            x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL, k_mst=k_mst_kw)
 
         gw_obs       = self.gw_observations
         sigma_td     = self.gw_error_scales["sigma_td"] * gw_obs['time_delays']
@@ -274,7 +277,7 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
     def __init__(self, n_images=4, gw_observations=None, em_observations=None,
                  lens_image=None, lens_gw=None, noise=None,
                  solver=None, solver_params=None, priors=None,
-                 gw_error_scales=None):
+                 gw_error_scales=None, use_mst: bool = False):
         """
         Args:
             n_images:        Number of lensed images (excluding central image).
@@ -291,6 +294,7 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
                              Source/lens center keys also accepted.
             gw_error_scales: Optional dict scaling GW likelihood uncertainties.
                              Keys: 'sigma_td', 'sigma_dL_eff', 'epsilon'.
+            use_mst:         If True, include mass-sheet ``k_mst`` in GW forward model.
         """
         self.n_images        = n_images
         self.gw_observations = gw_observations or {}
@@ -298,6 +302,7 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
         self.lens_image      = lens_image
         self.lens_gw         = lens_gw
         self.noise           = noise
+        self.use_mst         = bool(use_mst)
         self.solver          = solver
         self.solver_params   = solver_params if solver_params is not None else SOLVER_PARAMS.copy()
         self.pix_scl         = 0.4
@@ -380,9 +385,10 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
         x_pos_array = jnp.array(result_theta_x_no_central)
         y_pos_array = jnp.array(result_theta_y_no_central)
 
+        k_mst_kw = p["k_mst"]() if self.use_mst else None
         (_, model_time_delays, _, model_dL_eff,
          _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
-            x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL)
+            x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL, k_mst=k_mst_kw)
 
         gw_obs       = self.gw_observations
         sigma_td     = self.gw_error_scales["sigma_td"] * gw_obs['time_delays']
@@ -589,7 +595,7 @@ class ProbModel_GW_only(hcl.NumpyroModel):
 
     def __init__(self, n_images=4, gw_observations=None, lens_gw=None,
                  priors=None, image_position_priors=None, image_positions=None,
-                 gw_error_scales=None):
+                 gw_error_scales=None, use_mst: bool = False):
         """
         Args:
             n_images:        Number of lensed images.
@@ -600,10 +606,12 @@ class ProbModel_GW_only(hcl.NumpyroModel):
             image_positions: Legacy alias for image_position_priors (kept for compatibility).
             gw_error_scales: Optional dict scaling GW likelihood uncertainties.
                              Keys: 'sigma_td', 'sigma_dL_eff', 'epsilon'.
+            use_mst:         If True, include mass-sheet ``k_mst`` in GW forward model.
         """
         self.n_images        = n_images
         self.gw_observations = gw_observations or {}
         self.lens_gw         = lens_gw
+        self.use_mst         = bool(use_mst)
         self.pix_scl         = 0.4
         self.priors          = {**DEFAULT_PRIORS_GW_ONLY, **(priors or {})}
         if image_positions is not None and image_position_priors is None:
@@ -640,9 +648,10 @@ class ProbModel_GW_only(hcl.NumpyroModel):
         x_pos_array, y_pos_array = _sample_image_positions(
             self.n_images, self.priors, self.image_position_priors)
 
+        k_mst_kw = p["k_mst"]() if self.use_mst else None
         (_, model_time_delays, _, model_dL_eff,
          _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
-            x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL)
+            x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL, k_mst=k_mst_kw)
 
         gw_obs       = self.gw_observations
         sigma_td     = self.gw_error_scales["sigma_td"] * gw_obs['time_delays']
