@@ -236,18 +236,19 @@ def simulate_gw(source_pos, kwargs_lens, lens_mass_model,
 
 
 def simulate_gw_mst(source_pos, kwargs_lens, lens_mass_model,
-                    cosmology, zl, zs, kappa0=0.0,
+                    cosmology, zl, zs, k_mst=0.0,
                     lens_model_list=None, solver_params=None):
     """Simulate GW observation data with Mass Sheet Transform (MST).
     
     Args:
         source_pos: Tuple (x, y) of source position in arcsec (UNSCALED)
         kwargs_lens: List of lens mass model kwargs (UNSCALED)
-        lens_mass_model: MassModelMassSheet instance with kappa0 set
+        lens_mass_model: Used only to infer ``lens_model_list`` if not passed; GW uses plain
+            ``MassModel`` + ``LensImageGW.compute_mst(..., k_mst)``.
         cosmology: Cosmology instance
         zl: Lens redshift
         zs: Source redshift
-        kappa0: Mass sheet convergence (default 0.0 → reduces to simulate_gw)
+        k_mst: Uniform mass-sheet convergence (MST); ``0.0`` matches ``simulate_gw``.
         lens_model_list: List of lens model names
         solver_params: Optional solver parameters dict
 
@@ -266,19 +267,19 @@ def simulate_gw_mst(source_pos, kwargs_lens, lens_mass_model,
             raise ValueError("lens_model_list must be provided")
 
 
-    _, x_image, y_image, _ = setup_lens_mst(
+    _, x_image, y_image, lens_mass_model = setup_lens_mst(
         lens_model_list,
         kwargs_lens,
         zl,
         zs,
         source_pos,
         solver_params=solver_params,
-        kappa0=kappa0
+        k_mst=k_mst,
     )
 
     time_delay_distance = cosmology.time_delay_distance(zl, zs)
     lens_gw = lensimage_gw.LensImageGW(lens_mass_model)
-    data_GW = lens_gw.compute(x_image, y_image, kwargs_lens, time_delay_distance)
+    data_GW = lens_gw.compute_mst(x_image, y_image, kwargs_lens, time_delay_distance, k_mst)
 
     dL = cosmology.luminosity_distance(zs)
     magnifications = data_GW['mu']
@@ -293,8 +294,8 @@ def simulate_gw_mst(source_pos, kwargs_lens, lens_mass_model,
     return x_image, y_image, gw_obs, data_GW, lens_gw
 
 
-def compute_gw_from_images(x_image, y_image, kwargs_lens, lens_gw, 
-                          T_star, dL):
+def compute_gw_from_images(x_image, y_image, kwargs_lens, lens_gw,
+                          T_star, dL, k_mst=None):
     """Compute GW observables from image positions (for use during HMC inference).
     
     This function is used inside ProbModel.model() during inference when
@@ -335,9 +336,11 @@ def compute_gw_from_images(x_image, y_image, kwargs_lens, lens_gw,
     """
     # Compute D_dt from T_star
     D_dt = (T_star * c) / (Mpc_to_m * arcsecond_to_radians**2)  # in Mpc
-    
-    # Compute GW observables
-    model_gw = lens_gw.compute(x_image, y_image, kwargs_lens, D_dt)
+
+    if k_mst is not None:
+        model_gw = lens_gw.compute_mst(x_image, y_image, kwargs_lens, D_dt, k_mst)
+    else:
+        model_gw = lens_gw.compute(x_image, y_image, kwargs_lens, D_dt)
     
     # Extract quantities
     beta_x = model_gw['beta_x']

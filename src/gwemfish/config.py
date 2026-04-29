@@ -27,13 +27,42 @@ Mpc_to_m = 3.085677581491367e+22
 c = 299792458.0  # Speed of light in m/s
 seconds_to_days = 1.1574074074074073e-05
 
-# Default solver parameters
+# Helens / pixel-based lens-equation solver (used by e.g. ProbModelSourcePlane).
 SOLVER_PARAMS = {
-    'nsolutions': 5,
-    'niter': 8,
-    'scale_factor': 2,
-    'nsubdivisions': 5,
+    "nsolutions": 5,
+    "niter": 8,
+    "scale_factor": 2,
+    "nsubdivisions": 5,
 }
+
+# Keys in cfg["gw"]["solver_params"] that belong to Helens only — not passed to jaxtronomy.
+HELEN_LENS_SOLVER_PARAM_KEYS = frozenset({"nsolutions", "niter", "scale_factor", "nsubdivisions"})
+
+# jaxtronomy ``LensEquationSolver.image_position_from_source`` (Lenstronomy grid vs analytical).
+# Override via cfg["gw"]["solver_params"], e.g. ``{"solver": "analytical"}``.
+IMAGE_POSITION_SOLVER_DEFAULTS = {
+    "solver": "lenstronomy",  # "lenstronomy" | "analytical" (see jaxtronomy docs; analytical: EPL/SIE (+ shear) only)
+    "min_distance": 0.01,
+    "search_window": 15,
+    "precision_limit": 1e-10,
+    "num_iter_max": 1200,
+    "arrival_time_sort": True,
+}
+
+# Dropped when ``solver=="analytical"`` so they are not forwarded to the analytic backend.
+LENSTRONOMY_GRID_KWARGS = frozenset(
+    {
+        "min_distance",
+        "search_window",
+        "precision_limit",
+        "num_iter_max",
+        "initial_guess_cut",
+        "verbose",
+        "x_center",
+        "y_center",
+        "num_random",
+    }
+)
 
 # Default pixel grid kwargs
 DEFAULT_PIXEL_GRID_KWARGS = {

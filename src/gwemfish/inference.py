@@ -56,7 +56,8 @@ def run_mcmc(model, num_warmup=6500, num_samples=14500, max_tree_depth=10,
 
 def run_mcmc_informed(model, u0, keys_to_include, H0,
                       num_warmup=2000, num_samples=5000, max_tree_depth=10,
-                      num_chains=2, scale=1.0, perturb_scale=0.1, rng_key=None):
+                      num_chains=2, scale=1.0, perturb_scale=0.1, rng_key=None,
+                      regularize=False):
     """Run MCMC informed by Fisher Hessian.
 
     Computes cov = inv(-H0), initialises chains near u0 with small
@@ -77,6 +78,12 @@ def run_mcmc_informed(model, u0, keys_to_include, H0,
                           (default 0.1 = 10% of posterior sigma).
                           Ensures chains differ for reliable r-hat.
         rng_key:          Random key (default: None → PRNGKey(2)).
+        regularize:       If True, use eigendecomposition to regularise the
+                          Fisher matrix before inversion. Eigenvalues below
+                          1e-6 × max(eigenvalue) are clamped, so near-degenerate
+                          directions (e.g. gamma/theta_E/kappa) get large-but-finite
+                          sigma instead of NaN from jnp.linalg.inv on a singular matrix.
+                          Enable via cfg['inference']['regularize']=True (default False).
 
     Returns:
         samples, summary_dict, extra_fields, mcmc
@@ -84,8 +91,18 @@ def run_mcmc_informed(model, u0, keys_to_include, H0,
     if rng_key is None:
         rng_key = random.PRNGKey(2)
 
-    cov         = jnp.linalg.inv(-H0) * (scale ** 2)
-    mass_matrix = jnp.linalg.inv(cov)
+    FM = -H0
+    if regularize:
+        # Eigendecomposition: FM = V · diag(λ) · Vᵀ
+        # Clamp eigenvalues below 1e-6 * max(λ): degenerate directions get
+        # large-but-finite variance instead of NaN from a near-singular inverse.
+        eigvals, eigvecs = jnp.linalg.eigh(FM)
+        eigvals_reg = jnp.maximum(eigvals, jnp.max(eigvals) * 1e-6)
+        cov         = (eigvecs * (1.0 / eigvals_reg)) @ eigvecs.T * (scale ** 2)
+        mass_matrix = (eigvecs * eigvals_reg)          @ eigvecs.T / (scale ** 2)
+    else:
+        cov         = jnp.linalg.inv(FM) * (scale ** 2)
+        mass_matrix = jnp.linalg.inv(cov)
     sigmas      = jnp.sqrt(jnp.diag(cov))
 
     rng_key, subkey = random.split(rng_key)

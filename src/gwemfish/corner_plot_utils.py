@@ -10,12 +10,31 @@ This module provides utilities for creating corner plots with:
 - FIM direction overlays (optional)
 """
 
+import re
+
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.lines as mlines
 from matplotlib.patches import Patch
 import corner
 from typing import Dict, List, Tuple, Optional, Union
+
+# Flex layout flat keys: lens0_*, light0_*, source0_* (legacy uses lens_*, light_*, source_*).
+_RE_LENS_COMP = re.compile(r"^lens\d+_")
+_RE_LIGHT_COMP = re.compile(r"^light\d+_")
+_RE_SOURCE_COMP = re.compile(r"^source\d+_")
+
+
+def _is_lens_mass_key(k: str) -> bool:
+    return k.startswith("lens_") or bool(_RE_LENS_COMP.match(k))
+
+
+def _is_lens_light_key(k: str) -> bool:
+    return k.startswith("light_") or bool(_RE_LIGHT_COMP.match(k))
+
+
+def _is_source_light_key(k: str) -> bool:
+    return k.startswith("source_") or bool(_RE_SOURCE_COMP.match(k))
 
 
 # ---------------------------------------------------------------------------
@@ -405,9 +424,9 @@ def create_default_param_groups(
     dict[str, list[str]]
     """
     param_groups = {
-        'lens_light':         [k for k in samples_dict.keys() if k.startswith('light_')],
-        'source_light':       [k for k in samples_dict.keys() if k.startswith('source_')],
-        'lens_mass':          [k for k in samples_dict.keys() if k.startswith('lens_')],
+        'lens_light':         [k for k in samples_dict.keys() if _is_lens_light_key(k)],
+        'source_light':       [k for k in samples_dict.keys() if _is_source_light_key(k)],
+        'lens_mass':          [k for k in samples_dict.keys() if _is_lens_mass_key(k)or k == 'k_mst'],
         'cosmology_params':   [k for k in samples_dict.keys() if k in ['T_star', 'dL']],
         'GW_image_positions': [k for k in samples_dict.keys()
                                if k in ['image_x1', 'image_y1', 'image_x2', 'image_y2',

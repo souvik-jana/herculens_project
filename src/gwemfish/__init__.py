@@ -15,6 +15,17 @@ from .data_sim import (
 )
 # from .prob_model_PL import ProbModel, ProbModelSourcePlane, ProbModelFisher, ProbModel_EM_GW
 from .prob_model import ProbModel, ProbModelSourcePlane, ProbModelFisher, ProbModel_EM_only
+from .profile_prior_rules import required_default_sampler
+from .parameter_layout import (
+    build_mass_parameter_entries,
+    build_parameter_layout,
+    build_priors_registry,
+    build_vectorised_lens_kwargs_fn,
+    flat_keys,
+    make_infer_array_shape,
+    truth_vector_from_kwargs,
+)
+from .flex_prob_model import FlexProbModelEMGW, FlexProbModelEMOnly, FlexProbModelGWOnly
 from .inference import run_mcmc
 from .fisher import compute_fisher
 from .config import (
@@ -23,6 +34,7 @@ from .config import (
     c,
     seconds_to_days,
     SOLVER_PARAMS,
+    IMAGE_POSITION_SOLVER_DEFAULTS,
     DEFAULT_PIXEL_GRID_KWARGS,
     DEFAULT_PSF_KWARGS,
     DEFAULT_NOISE_KWARGS_SIMU,
@@ -44,6 +56,7 @@ from .config import (
 from .simple_pipeline import (
     setup_em_observation,
     setup_gw_observation,
+    prune_gw_images,
     run_inference,
     plot_posterior,
     plot_system_observation,
@@ -77,6 +90,7 @@ __all__ = [
     'c',
     'seconds_to_days',
     'SOLVER_PARAMS',
+    'IMAGE_POSITION_SOLVER_DEFAULTS',
     'DEFAULT_PIXEL_GRID_KWARGS',
     'DEFAULT_PSF_KWARGS',
     'DEFAULT_NOISE_KWARGS_SIMU',
@@ -95,6 +109,7 @@ __all__ = [
     # Simple pipeline
     'setup_em_observation',
     'setup_gw_observation',
+    'prune_gw_images',
     'run_inference',
     'plot_posterior',
     'plot_system_observation',
@@ -107,5 +122,17 @@ __all__ = [
     'make_default_cfg',
     # EM-only model
     'ProbModel_EM_only',
+    # Flexible layout (lens0_*, source0_*, light0_*) + profile priors
+    'required_default_sampler',
+    'build_parameter_layout',
+    'build_mass_parameter_entries',
+    'build_priors_registry',
+    'truth_vector_from_kwargs',
+    'flat_keys',
+    'make_infer_array_shape',
+    'build_vectorised_lens_kwargs_fn',
+    'FlexProbModelEMGW',
+    'FlexProbModelEMOnly',
+    'FlexProbModelGWOnly',
 ]
 
