@@ -56,6 +56,7 @@ from .config import (
 from .simple_pipeline import (
     setup_em_observation,
     setup_gw_observation,
+    prune_gw_images,
     run_inference,
     plot_posterior,
     plot_system_observation,
@@ -108,6 +109,7 @@ __all__ = [
     # Simple pipeline
     'setup_em_observation',
     'setup_gw_observation',
+    'prune_gw_images',
     'run_inference',
     'plot_posterior',
     'plot_system_observation',

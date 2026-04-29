@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import copy
 from typing import Any, Callable, Dict, List, Optional, Tuple
+from numpyro.handlers import trace, substitute, seed
 
 
 def _deep_merge_dict(base: Dict[str, Any], override: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -229,9 +230,14 @@ def make_default_cfg() -> Dict[str, Any]:
             },
             # For GW-only we constrain each image_x/i and image_y/i by a uniform box around truth.
             "image_box_half_width": 0.6,
-            # Mass sheet transform (MST): if True, ``setup_gw_observation`` uses ``simulate_gw_mst``
-            # with convergence ``k_mst``; inference adds a ``k_mst`` site unless set in ``cfg['priors']``.
+            # Legacy MST location (kept for backwards compatibility).
             "use_mst": False,
+            "k_mst": 0.0,
+        },
+        # Global Mass Sheet Transform (MST) controls (preferred over ``cfg['gw']['use_mst']/['k_mst']``).
+        # Applies to all modes (EM-only, GW-only, EM+GW) where relevant.
+        "mst": {
+            "enabled": False,
             "k_mst": 0.0,
         },
         "lens": {
@@ -377,6 +383,37 @@ def _merge_flex_priors_with_gw_image_pos(
     return out
 
 
+def _resolve_mst_settings(
+    cfg_full: Dict[str, Any],
+    *,
+    ctx: Optional[Dict[str, Any]] = None,
+) -> Tuple[bool, float]:
+    """Resolve MST settings from top-level cfg with backward-compatible fallbacks."""
+    mst_cfg = (cfg_full.get("mst") or {}) if isinstance(cfg_full, dict) else {}
+    gw_cfg = (cfg_full.get("gw") or {}) if isinstance(cfg_full, dict) else {}
+    ctx = ctx or {}
+
+    # Preferred: top-level ``mst`` block.
+    mst_enabled = bool(mst_cfg.get("enabled", False))
+    mst_k = float(mst_cfg.get("k_mst", 0.0))
+
+    # Backward-compatible legacy GW keys.
+    gw_enabled = bool(gw_cfg.get("use_mst", False))
+    gw_k = float(gw_cfg.get("k_mst", 0.0))
+
+    # If top-level mst is explicitly enabled, it wins. Otherwise honor legacy gw flags.
+    use_mst = mst_enabled or gw_enabled or bool(ctx.get("use_mst", False))
+
+    if mst_enabled:
+        k_mst = mst_k
+    elif gw_enabled:
+        k_mst = gw_k
+    else:
+        k_mst = mst_k if "k_mst" in mst_cfg else float(ctx.get("k_mst", 0.0))
+
+    return use_mst, k_mst
+
+
 # Legacy flat ``truth_params`` need these keys even when ``lens_model_list`` has no EPL/SIE
 # (e.g. SIS-only, NFW, flex layout). Layout mode still overwrites via ``truth_vector_from_kwargs``.
 _LEGACY_TRUTH_MASS_KW_FALLBACK: Dict[str, Any] = {
@@ -504,6 +541,14 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     source_model = em_cfg["source_model_class"]()
     lens_light_model = em_cfg["lens_light_model_class"]()
 
+    # Use MassModelMassSheet for EM simulation when MST is enabled.
+    use_mst, k_mst = _resolve_mst_settings(cfg_full)
+    if use_mst and k_mst != 0.0:
+        from .mass_sheet_model import MassModelMassSheet
+        lens_mass_model = MassModelMassSheet(
+            lens_model_list, k_mst=float(k_mst)
+        )
+
     em_obs, lens_image = simulate_em(
         kwargs_lens=cfg_full["lens"]["kwargs_lens"],
         kwargs_source=em_cfg["kwargs_source"],
@@ -564,6 +609,8 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
                 extra={"noise_sigma_bkg": truth_params["noise_sigma_bkg"]},
             )
         )
+        if use_mst:
+            truth_params["k_mst"] = float(k_mst)
     else:
         epl = _legacy_epl_like_kw(kwargs_lens)
         shear = _legacy_shear_kw(kwargs_lens)
@@ -578,6 +625,8 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
             "lens_center_y": float(epl["center_y"]),
             **common_truth,
         }
+        if use_mst:
+            truth_params["k_mst"] = float(k_mst)
 
     return {
         "cfg": cfg_full,
@@ -589,6 +638,8 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
         "noise_inf": noise_inf,
         "em_obs": em_obs,
         "truth_params": truth_params,
+        "use_mst": use_mst,
+        "k_mst": float(k_mst) if use_mst else 0.0,
     }
 
 
@@ -638,8 +689,7 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
 
     cosmology = JAXCosmology(**gw_cfg["cosmology"])
 
-    use_mst = bool(gw_cfg.get("use_mst", False))
-    k_mst = float(gw_cfg.get("k_mst", 0.0))
+    use_mst, k_mst = _resolve_mst_settings(cfg_full, ctx=ctx)
     if use_mst:
         x_img_gw, y_img_gw, gw_obs, data_GW, lens_gw = simulate_gw_mst(
             source_pos=gw_cfg["source_pos"],
@@ -754,6 +804,108 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
     return ctx
 
 
+def prune_gw_images(ctx: Dict[str, Any], n_keep: int) -> Dict[str, Any]:
+    """Keep the first ``n_keep`` GW images and prune dependent fields consistently.
+
+    Useful when a faint extra image is a numerical artifact and should be ignored
+    for downstream inference.
+
+    Updates (when present):
+      - ``ctx['x_img_gw']``, ``ctx['y_img_gw']``, ``ctx['n_images']``
+      - ``ctx['cfg']['gw']['n_images']``
+      - ``ctx['data_GW']`` image-wise arrays and time-delay arrays
+      - ``ctx['gw_obs']['dL_eff']`` and ``ctx['gw_obs']['time_delays']``
+      - ``ctx['truth_params']`` image_x*/image_y* keys
+    """
+    import jax.numpy as jnp
+
+    if n_keep <= 0:
+        raise ValueError(f"`n_keep` must be >= 1, got {n_keep}.")
+
+    if "x_img_gw" not in ctx or "y_img_gw" not in ctx:
+        raise ValueError("Context must contain both `x_img_gw` and `y_img_gw`.")
+
+    x_img = jnp.asarray(ctx["x_img_gw"])
+    y_img = jnp.asarray(ctx["y_img_gw"])
+    if int(x_img.size) != int(y_img.size):
+        raise ValueError(
+            f"Inconsistent GW images: len(x_img_gw)={int(x_img.size)} "
+            f"!= len(y_img_gw)={int(y_img.size)}."
+        )
+    if n_keep > int(x_img.size):
+        raise ValueError(
+            f"`n_keep`={n_keep} exceeds available GW images ({int(x_img.size)})."
+        )
+
+    out = dict(ctx)
+    out["x_img_gw"] = x_img[:n_keep]
+    out["y_img_gw"] = y_img[:n_keep]
+    out["n_images"] = int(n_keep)
+
+    cfg_cur = out.get("cfg")
+    if isinstance(cfg_cur, dict):
+        cfg_new = dict(cfg_cur)
+        gw_cfg = dict(cfg_new.get("gw", {}))
+        gw_cfg["n_images"] = int(n_keep)
+        cfg_new["gw"] = gw_cfg
+        out["cfg"] = cfg_new
+
+    data_gw = out.get("data_GW")
+    if isinstance(data_gw, dict):
+        dg = dict(data_gw)
+        image_level_keys = (
+            "beta_x",
+            "beta_y",
+            "psi",
+            "mu",
+            "phi_in_arcsecsq",
+            "tarrivals_in_seconds",
+            "tarrivals_in_days",
+            "tarrivals_days",
+        )
+        for key in image_level_keys:
+            if key in dg:
+                dg[key] = jnp.asarray(dg[key])[:n_keep]
+
+        if "tarrivals_in_seconds" in dg:
+            dg["time_delays_in_seconds"] = jnp.diff(dg["tarrivals_in_seconds"])
+        elif "time_delays_in_seconds" in dg:
+            dg["time_delays_in_seconds"] = jnp.asarray(dg["time_delays_in_seconds"])[
+                : max(n_keep - 1, 0)
+            ]
+
+        if "tarrivals_in_days" in dg:
+            dg["time_delays_in_days"] = jnp.diff(dg["tarrivals_in_days"])
+        elif "tarrivals_days" in dg:
+            dg["time_delays_in_days"] = jnp.diff(dg["tarrivals_days"])
+        elif "time_delays_in_days" in dg:
+            dg["time_delays_in_days"] = jnp.asarray(dg["time_delays_in_days"])[
+                : max(n_keep - 1, 0)
+            ]
+
+        out["data_GW"] = dg
+
+    gw_obs = out.get("gw_obs")
+    if isinstance(gw_obs, dict):
+        go = dict(gw_obs)
+        if "dL_eff" in go:
+            go["dL_eff"] = jnp.asarray(go["dL_eff"])[:n_keep]
+        if "time_delays" in go:
+            go["time_delays"] = jnp.asarray(go["time_delays"])[: max(n_keep - 1, 0)]
+        out["gw_obs"] = go
+
+    truth_params = dict(out.get("truth_params", {}))
+    for key in list(truth_params.keys()):
+        if (key.startswith("image_x") or key.startswith("image_y")) and key[7:].isdigit():
+            truth_params.pop(key, None)
+    for i in range(n_keep):
+        truth_params[f"image_x{i+1}"] = float(out["x_img_gw"][i])
+        truth_params[f"image_y{i+1}"] = float(out["y_img_gw"][i])
+    out["truth_params"] = truth_params
+
+    return out
+
+
 def _resolve_gw_n_images(ctx: Dict[str, Any], cfg_full: Dict[str, Any]) -> int:
     """Canonical GW image count (same rules as ``run_inference`` / ``setup_gw_observation``)."""
     import jax.numpy as jnp
@@ -818,10 +970,11 @@ def run_inference(
 
     ``compute_fisher`` always uses the full model to build ``H0`` at the expansion point.
 
-    **Mass sheet (MST)** — Set ``cfg['gw']['use_mst']=True`` and ``cfg['gw']['k_mst']`` (simulation
-    truth) in ``setup_gw_observation``; for inference, ``run_inference`` adds a default ``k_mst``
-    uniform prior unless ``cfg['priors']['k_mst']`` is set. GW forward uses ``LensImageGW.compute_mst``
-    so ``k_mst`` is JAX-traceable.
+    **Mass sheet (MST)** — Prefer top-level ``cfg['mst'] = {'enabled': bool, 'k_mst': float}``.
+    Legacy ``cfg['gw']['use_mst']`` / ``cfg['gw']['k_mst']`` are still accepted as fallbacks.
+    For inference, ``run_inference`` adds a default ``k_mst`` uniform prior unless
+    ``cfg['priors']['k_mst']`` is set. GW forward uses ``LensImageGW.compute_mst`` so ``k_mst``
+    is JAX-traceable.
     """
     if mode not in ("EM+GW", "GW-only", "EM-only"):
         raise ValueError("mode must be one of: 'EM+GW', 'GW-only', 'EM-only'")
@@ -851,6 +1004,7 @@ def run_inference(
     cfg_full = _deep_merge_dict(ctx.get("cfg", make_default_cfg()), cfg)
     setup_seed = cfg_full["inference"]["rng_key"]
     fisher_seed = int(cfg_full["inference"]["rng_key"])
+    likelihood_seed = int(cfg_full["inference"]["rng_key"])
 
     priors_user = cfg_full.get("priors", {})
     priors_user_norm = _normalize_priors_overrides(priors_user, jnp=jnp, numpyro=numpyro, dist=dist)
@@ -872,11 +1026,10 @@ def run_inference(
     # so model defaults remain fully active unless user overrides explicitly.
     priors_internal: Dict[str, Any] = {}
 
-    gw_cfg_inf = cfg_full.get("gw", {}) or {}
-    use_mst = bool(gw_cfg_inf.get("use_mst", ctx.get("use_mst", False)))
-    if use_mst and mode in ("EM+GW", "GW-only") and "k_mst" not in priors_user_norm:
+    use_mst, _ = _resolve_mst_settings(cfg_full, ctx=ctx)
+    if use_mst and mode in ("EM+GW", "GW-only", "EM-only") and "k_mst" not in priors_user_norm:
         priors_internal["k_mst"] = lambda: numpyro.sample(
-            "k_mst", dist.Uniform(-0.98, 0.98)
+            "k_mst", dist.Uniform(-0.99999, 0.99999)
         )
 
     # Tight image-position priors for GW-only (GW prob model uses flat min/max unless
@@ -993,13 +1146,14 @@ def run_inference(
                 lens_image=ctx["lens_image"],
                 user_priors=priors_user_norm,
             )
-            priors_flex = {**priors_reg, **priors_internal}
+            priors_flex = {**priors_reg, **priors_internal, **priors_user_norm}
             probmodel = FlexProbModelEMOnly(
                 entries,
                 priors_flex,
                 em_observations=ctx["em_obs"],
                 lens_image=ctx["lens_image"],
                 noise=ctx["noise_inf"],
+                use_mst=use_mst,
             )
     elif mode == "EM+GW":
         # For EM+GW, image positions are handled via image-position prior geometry
@@ -1042,6 +1196,7 @@ def run_inference(
             priors=priors_combined,
         )
 
+   
     # Keys to include and expansion point. Fixed literals in ``cfg['priors']`` are held at those
     # values in ``input_params`` but omitted from ``keys_to_include`` so Fisher / deriv-approx does
     # not differentiate w.r.t. them (matches EM+GW behavior where user priors override image boxes).
@@ -1065,7 +1220,97 @@ def run_inference(
             + ", ".join(missing)
             + ". Provide these via `cfg['priors']` (and re-run setup), or ensure simulation truth matches."
         )
+    def check_contributions(model, rng_key=None):
+        def get_likelihood_contributions(params, _rng_key=rng_key):
+            """Extract likelihood and prior contributions from all sites in the model trace."""
+            key = jax.random.PRNGKey(0) if _rng_key is None else _rng_key
+            
+            # Get trace with parameters substituted
+            seeded_model = seed(model, key)
+            substituted_model = substitute(seeded_model, data=params)
+            tr = trace(substituted_model).get_trace()
+            
+            log_prior = 0.0
+            log_likelihood = 0.0
+            prior_components = {}
+            likelihood_components = {}
+            
+            print("=" * 80)
+            print("LIKELIHOOD CONTRIBUTIONS FROM ALL SITES")
+            print("=" * 80)
+            print(f"{'Site Name':<30} {'Type':<15} {'Log Prob':<20} {'Value'}")
+            print("-" * 80)
+            
+            for site_name, site in tr.items():
+                if site['type'] == 'sample':
+                    value = site['value']
+                    log_prob = jnp.sum(site['fn'].log_prob(value))
+                    
+                    if site.get('is_observed', False):
+                        log_likelihood += log_prob
+                        likelihood_components[site_name] = float(log_prob)
+                        site_type = "LIKELIHOOD"
+                    else:
+                        log_prior += log_prob
+                        prior_components[site_name] = float(log_prob)
+                        site_type = "PRIOR"
+                    
+                    # Format value for display
+                    if hasattr(value, 'shape') and value.size > 1:
+                        value_str = f"shape={value.shape}"
+                    else:
+                        value_str = str(float(value)) if jnp.isscalar(value) else str(value)
+                    
+                    print(f"{site_name:<30} {site_type:<15} {float(log_prob):<20.6f} {value_str}")
+            
+            print("-" * 80)
+            print(f"{'TOTAL PRIOR':<30} {'':<15} {float(log_prior):<20.6f}")
+            print(f"{'TOTAL LIKELIHOOD':<30} {'':<15} {float(log_likelihood):<20.6f}")
+            print(f"{'TOTAL POSTERIOR':<30} {'':<15} {float(log_prior + log_likelihood):<20.6f}")
+            print("=" * 80)
+            
+            return {
+                'log_prior': float(log_prior),
+                'log_likelihood': float(log_likelihood),
+                'log_posterior': float(log_prior + log_likelihood),
+                'prior_components': prior_components,
+                'likelihood_components': likelihood_components,
+                'trace': tr
+            }
+        return get_likelihood_contributions
+
+
+     ### This will return the likelihood function which user can use for checks
+    # Seed the model
+    def give_user_likelihood_function(probmodel, input_params, keys_to_include, likelihood_seed):
+        seeded_model = seed(probmodel.model, jax.random.PRNGKey(likelihood_seed))
+        # Create logdensity function
+        def logdensity_fn(args):
+            # print("args:", args)
+            log_density, _ = numpyro.infer.util.log_density(seeded_model, (), {}, args)
+            return log_density
+        
+        # Create vectorized logdensity function
+        def logdensity_fn_vec(u):
+            input_ = input_params.copy()
+            for i, key in enumerate(keys_to_include):
+                input_[key] = u[i]
+            return logdensity_fn(input_)
+        
+        return logdensity_fn_vec, logdensity_fn
+    
+    logdensity_fn_vec, logdensity_fn = give_user_likelihood_function(probmodel, input_params, keys_to_include, likelihood_seed)
+    contributions = check_contributions(probmodel.model, jax.random.PRNGKey(likelihood_seed))
+    ctx["likelihood"] = {}
+    ctx["likelihood"]["probmodel"] = probmodel
+    ctx["likelihood"]["likelihood_function_vec"] = logdensity_fn_vec
+    ctx["likelihood"]["likelihood_function"] = logdensity_fn
+    ctx["likelihood"]["input_params"] = input_params
+    ctx["likelihood"]["keys_to_include"] = keys_to_include
+    ctx["likelihood"]["check_contributions"] = contributions
+
     u0 = jnp.asarray([input_params[k] for k in keys_to_include], dtype=jnp.float64)
+    ctx["likelihood"]["u0"] = u0
     # --- DEBUG ---
     print("use_mst in probmodel:", probmodel.use_mst)
     print("k_mst in keys_to_include:", "k_mst" in keys_to_include)
@@ -1081,6 +1326,13 @@ def run_inference(
         rng_key=jax.random.PRNGKey(fisher_seed),
         order=int(cfg_full["inference"]["fisher_order"]),
     )
+    ctx['fisher'] = {}
+    ctx['fisher']['approx_logp'] = approx_logp
+    ctx['fisher']['logp0'] = logp0
+    ctx['fisher']['g0'] = g0
+    ctx['fisher']['H0'] = H0
+    ctx['fisher']['F0'] = F0
+    ctx['fisher']['Q0'] = Q0
     # Diagnostic: gradient and Hessian diagonal at u0 (Fisher expansion point).
     for i, key in enumerate(keys_to_include):
         gi = g0[i]
@@ -1179,6 +1431,7 @@ def run_inference(
         use_informed_mcmc = False
 
     if use_informed_mcmc:
+        print("Running informed HMC")
         samples, summary, extra_fields, mcmc = run_mcmc_informed(
             mcmc_model,
             u0=u0,
@@ -1190,9 +1443,11 @@ def run_inference(
             num_chains=int(cfg_full["inference"]["num_chains"]),
             scale=float(cfg_full["inference"].get("hmc_informed_scale", 1.0)),
             perturb_scale=float(cfg_full["inference"].get("hmc_informed_perturb_scale", 0.1)),
+            regularize=bool(cfg_full["inference"].get("regularize", False)),
             rng_key=jax.random.PRNGKey(int(setup_seed)),
         )
     else:
+        print("Running uninformed HMC")
         samples, summary, extra_fields, mcmc = run_mcmc(
             mcmc_model,
             num_warmup=int(cfg_full["inference"]["num_warmup"]),

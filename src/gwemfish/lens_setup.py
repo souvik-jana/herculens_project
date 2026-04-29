@@ -75,8 +75,10 @@ def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos,
     if solver_params is None:
         solver_params = {**IMAGE_POSITION_SOLVER_DEFAULTS, **SOLVER_PARAMS}
 
-    # Create herculens MassModel
-    lens_mass_model = MassModel(lens_model_list)
+    # Create herculens MassModel — no_complex_numbers=True uses omega_real for EPL
+    # derivatives, which has no inner @jit and allows gradients w.r.t. gamma and e2
+    # to flow correctly through lax.fori_loop.
+    lens_mass_model = MassModel(lens_model_list)#, no_complex_numbers=True)
     
     # Setup jaxtronomy lens model for solving
     lensModel = LensModel(

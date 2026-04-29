@@ -96,15 +96,30 @@ class FlexProbModelEMGW(hcl.NumpyroModel):
         flat["noise_sigma_bkg"] = p["noise_sigma_bkg"]()
         flat["T_star"] = p["T_star"]()
         flat["dL"] = p["dL"]()
-
+        ## OLD #########################################################
+        # kl, ks, kll = unpack_to_kwargs(
+        #     flat, self.entries, n_mass=self.n_mass, n_source=self.n_source, n_lens_light=self.n_lens_light
+        # )
+        
+        # sigma_bkg = flat["noise_sigma_bkg"]
+        # model_image = self.lens_image.model(
+        #     kwargs_lens=kl, kwargs_lens_light=kll, kwargs_source=ks
+        # )
+        ## NEW #########################################################
         kl, ks, kll = unpack_to_kwargs(
             flat, self.entries, n_mass=self.n_mass, n_source=self.n_source, n_lens_light=self.n_lens_light
         )
-        
+
+        #inject traced k_mst into lens_image mass model before EM likelihood
+        k_mst_kw = p["k_mst"]() if self.use_mst else None
+        if self.use_mst:
+            self.lens_image.MassModel.kappa0 = k_mst_kw
+
         sigma_bkg = flat["noise_sigma_bkg"]
         model_image = self.lens_image.model(
             kwargs_lens=kl, kwargs_lens_light=kll, kwargs_source=ks
         )
+        ########################################
         em_data = self.em_observations["data"]
         model_var = self.noise.C_D_model(model_image, background_rms=sigma_bkg)
         numpyro.sample(
@@ -118,7 +133,7 @@ class FlexProbModelEMGW(hcl.NumpyroModel):
         )
 
         T_star, dL = flat["T_star"], flat["dL"]
-        k_mst_kw = p["k_mst"]() if self.use_mst else None
+        # k_mst_kw = p["k_mst"]() if self.use_mst else None
         (_, model_time_delays, _, model_dL_eff, _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
             x_pos_array, y_pos_array, kl, self.lens_gw, T_star, dL, k_mst=k_mst_kw
         )
@@ -189,9 +204,11 @@ class FlexProbModelEMOnly(hcl.NumpyroModel):
         lens_image=None,
         noise=None,
         extra_priors: Optional[Dict[str, Callable[[], Any]]] = None,
+        use_mst: bool = False, 
     ):
         self.entries = list(entries)
         self.priors = {**(_default_extra_priors_em_only()), **(extra_priors or {}), **priors}
+        self.use_mst = bool(use_mst)
         self.n_mass = len(lens_image.MassModel.func_list)
         self.n_source = len(lens_image.SourceModel.func_list)
         self.n_lens_light = len(lens_image.LensLightModel.func_list)
@@ -210,6 +227,11 @@ class FlexProbModelEMOnly(hcl.NumpyroModel):
         kl, ks, kll = unpack_to_kwargs(
             flat, self.entries, n_mass=self.n_mass, n_source=self.n_source, n_lens_light=self.n_lens_light
         )
+        #inject traced k_mst into lens_image mass model before EM likelihood
+        k_mst_kw = p["k_mst"]() if self.use_mst else None
+        if self.use_mst:
+            self.lens_image.MassModel.kappa0 = k_mst_kw
+
         sigma_bkg = flat["noise_sigma_bkg"]
         model_image = self.lens_image.model(
             kwargs_lens=kl, kwargs_lens_light=kll, kwargs_source=ks
@@ -223,7 +245,10 @@ class FlexProbModelEMOnly(hcl.NumpyroModel):
         )
 
     def all_flat_keys(self) -> List[str]:
-        return flat_keys(self.entries) + ["noise_sigma_bkg"]
+        extra = ["noise_sigma_bkg"]
+        if self.use_mst:
+            extra.append("k_mst")
+        return flat_keys(self.entries) + extra
 
 
 class FlexProbModelGWOnly(hcl.NumpyroModel):

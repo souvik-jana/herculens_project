@@ -142,6 +142,12 @@ def required_default_sampler(
                 return uniform(-jnp.pi, jnp.pi)
             if param in ("ra_0", "dec_0"):
                 return normal(0.0, 0.3)
+        # herculens.MassModel.Profiles.convergence.Convergence: param_names kappa, ra_0, dec_0
+        if cls == "Convergence":
+            if param == "kappa":
+                return uniform(-1.0, 1.0)
+            if param in ("ra_0", "dec_0"):
+                return normal(0.0, 0.3)
         if cls == "Multipole":
             if param == "m":
                 return lambda: numpyro.sample(key, dist.Delta(jnp.asarray(2.0)))
