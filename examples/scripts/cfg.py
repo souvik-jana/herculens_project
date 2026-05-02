@@ -77,10 +77,12 @@ CFG = {
             "search_window": 4.0,
             "num_random_init": 12,
         },
-        # Same convention as ``ProbModel``: sigma_td * gw_obs['time_delays'],
+        # sigma_td: fractional scale; sigma_td_floor: absolute minimum (seconds).
+        # Effective sigma_td = max(sigma_td_floor, sigma_td * time_delay).
         # sigma_dL_eff * gw_obs['dL_eff'], epsilon * ones_like(betx_x_diff).
         "error_scales": {
             "sigma_td": 0.05,
+            "sigma_td_floor": 1.0,
             "sigma_dL_eff": 0.2,
             "epsilon": 0.005,
         },

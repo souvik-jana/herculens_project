@@ -139,7 +139,10 @@ class FlexProbModelEMGW(hcl.NumpyroModel):
         )
 
         gw_obs = self.gw_observations
-        sigma_td = self.gw_error_scales["sigma_td"] #* gw_obs["time_delays"]
+        sigma_td = jnp.maximum(
+            self.gw_error_scales.get("sigma_td_floor", 1.0),
+            self.gw_error_scales["sigma_td"] * gw_obs["time_delays"],
+        )
         sigma_dL_eff = self.gw_error_scales["sigma_dL_eff"] * gw_obs["dL_eff"]
         epsilon = self.gw_error_scales["epsilon"] * jnp.ones_like(betx_x_diff)
 
@@ -312,7 +315,10 @@ class FlexProbModelGWOnly(hcl.NumpyroModel):
         )
 
         gw_obs = self.gw_observations
-        sigma_td = self.gw_error_scales["sigma_td"] * gw_obs["time_delays"]
+        sigma_td = jnp.maximum(
+            self.gw_error_scales.get("sigma_td_floor", 1.0),
+            self.gw_error_scales["sigma_td"] * gw_obs["time_delays"],
+        )
         sigma_dL_eff = self.gw_error_scales["sigma_dL_eff"] * gw_obs["dL_eff"]
         epsilon = self.gw_error_scales["epsilon"] * jnp.ones_like(betx_x_diff)
 
