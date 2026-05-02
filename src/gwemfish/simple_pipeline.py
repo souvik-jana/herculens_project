@@ -39,6 +39,39 @@ def _deep_merge_dict(base: Dict[str, Any], override: Optional[Dict[str, Any]]) -
     return out
 
 
+def deep_merge_cfg(
+    base: Dict[str, Any],
+    override: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Recursively merge ``override`` into ``base`` (``override`` wins on conflicts).
+
+    Same policy as ``setup_em_observation``, ``setup_gw_observation``, and
+    ``run_inference``: nested dict sections are merged; leaves replace outright.
+    If ``override`` is ``None``, empty, or not a mapping (e.g. missing JSON field),
+    returns a fresh deep copy of ``base``.
+    """
+    if not isinstance(override, dict) or not override:
+        return copy.deepcopy(base)
+    return _deep_merge_dict(base, override)
+
+
+def restore_em_model_factories(cfg, *, defaults=None):
+    """Reattach EM ``source_model_class`` / ``lens_light_model_class`` callables after JSON load.
+
+    ``to_serializable`` stores callables as ``repr`` strings; merging a saved bundle
+    therefore breaks ``setup_em_observation``. This overlays the live factories from
+    ``defaults`` (normally ``make_default_cfg()``) when the merged value is not callable.
+    """
+    ref = defaults if isinstance(defaults, dict) else make_default_cfg()
+    em = cfg.get("em") if isinstance(cfg, dict) else None
+    ref_em = ref.get("em") if isinstance(ref.get("em"), dict) else {}
+    if not isinstance(em, dict):
+        return
+    for key in ("source_model_class", "lens_light_model_class"):
+        if not callable(em.get(key)) and callable(ref_em.get(key)):
+            em[key] = ref_em[key]
+
+
 def _save_dict_npz(path: Optional[str], data: Dict[str, Any]) -> None:
     """Save a flat dictionary to .npz if path is provided."""
     if not path:
@@ -135,6 +168,14 @@ def _to_serializable(obj: Any) -> Any:
         return np.asarray(obj).tolist()
     except Exception:
         return repr(obj)
+
+
+def to_serializable(obj: Any) -> Any:
+    """Best-effort convert ``obj`` to JSON-serializable data (pipeline JSON payloads).
+
+    This is the public alias of ``_to_serializable``; behavior is identical.
+    """
+    return _to_serializable(obj)
 
 
 def _save_pipeline_json(

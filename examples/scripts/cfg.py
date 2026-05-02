@@ -7,7 +7,18 @@ Usage:
 """
 
 from copy import deepcopy
-from gwemfish.config import DEFAULT_LENS_LIGHT_MODEL, DEFAULT_SOURCE_LIGHT_MODEL
+
+
+def _default_source_light_model():
+    import herculens as hcl
+
+    return hcl.LightModel([hcl.Sersic()])
+
+
+def _default_lens_light_model():
+    import herculens as hcl
+
+    return hcl.LightModel([hcl.Sersic()])
 
 
 # This template enumerates all top-level/simple-pipeline options explicitly.
@@ -50,9 +61,9 @@ CFG = {
                 "center_y": 0.0,
             }
         ],
-        # Default model factories; replace with your own callable factories if needed.
-        "source_model_class": DEFAULT_SOURCE_LIGHT_MODEL,
-        "lens_light_model_class": DEFAULT_LENS_LIGHT_MODEL,
+        # Zero-arg factories → ``herculens.LightModel``; swap components to match simulation.
+        "source_model_class": _default_source_light_model,
+        "lens_light_model_class": _default_lens_light_model,
         "seed": 87651,
     },
     "gw": {

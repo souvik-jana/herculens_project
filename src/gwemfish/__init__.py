@@ -67,6 +67,8 @@ from .simple_pipeline import (
     to_source_plane_samples,
     plot_source_posterior,
     make_default_cfg,
+    deep_merge_cfg,
+    to_serializable,
 )
 
 __all__ = [
@@ -120,6 +122,8 @@ __all__ = [
     'to_source_plane_samples',
     'plot_source_posterior',
     'make_default_cfg',
+    'deep_merge_cfg',
+    'to_serializable',
     # EM-only model
     'ProbModel_EM_only',
     # Flexible layout (lens0_*, source0_*, light0_*) + profile priors
