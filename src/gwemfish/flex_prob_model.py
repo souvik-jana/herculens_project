@@ -134,7 +134,7 @@ class FlexProbModelEMGW(hcl.NumpyroModel):
 
         T_star, dL = flat["T_star"], flat["dL"]
         # k_mst_kw = p["k_mst"]() if self.use_mst else None
-        (_, model_time_delays, _, model_dL_eff, _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
+        (_, model_time_delays, model_magnifications, model_dL_eff, _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
             x_pos_array, y_pos_array, kl, self.lens_gw, T_star, dL, k_mst=k_mst_kw
         )
 
@@ -166,6 +166,9 @@ class FlexProbModelEMGW(hcl.NumpyroModel):
             dist.Independent(dist.Normal(jnp.zeros_like(bety_y_diff), epsilon), 1),
             obs=bety_y_diff,
         )
+        # Jacobian: flat prior on image positions implies p(β) ∝ ∏|μ_i| in source space.
+        # This factor corrects to a flat source-plane prior: log|∂β/∂θ| = -∑log|μ_i|.
+        numpyro.factor("log_jacobian", -jnp.sum(jnp.log(jnp.abs(model_magnifications))))
 
     def params2kwargs(self, params: Dict[str, Any]) -> Dict[str, Any]:
         kl, ks, kll = unpack_to_kwargs(
@@ -310,7 +313,7 @@ class FlexProbModelGWOnly(hcl.NumpyroModel):
         )
         T_star, dL = flat["T_star"], flat["dL"]
         k_mst_kw = p["k_mst"]() if self.use_mst else None
-        (_, model_time_delays, _, model_dL_eff, _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
+        (_, model_time_delays, model_magnifications, model_dL_eff, _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
             x_pos_array, y_pos_array, kl, self.lens_gw, T_star, dL, k_mst=k_mst_kw
         )
 
@@ -342,6 +345,9 @@ class FlexProbModelGWOnly(hcl.NumpyroModel):
             dist.Independent(dist.Normal(jnp.zeros_like(bety_y_diff), epsilon), 1),
             obs=bety_y_diff,
         )
+        # Jacobian: flat prior on image positions implies p(β) ∝ ∏|μ_i| in source space.
+        # This factor corrects to a flat source-plane prior: log|∂β/∂θ| = -∑log|μ_i|.
+        numpyro.factor("log_jacobian", -jnp.sum(jnp.log(jnp.abs(model_magnifications))))
 
     def all_flat_keys(self) -> List[str]:
         base = flat_keys(self.entries)

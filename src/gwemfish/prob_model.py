@@ -201,7 +201,7 @@ class ProbModel(hcl.NumpyroModel):
 
         # --- GW likelihood ---
         k_mst_kw = p["k_mst"]() if self.use_mst else None
-        (_, model_time_delays, _, model_dL_eff,
+        (_, model_time_delays, model_magnifications, model_dL_eff,
          _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
             x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL, k_mst=k_mst_kw)
 
@@ -225,6 +225,9 @@ class ProbModel(hcl.NumpyroModel):
         numpyro.sample('bety_y_diff',
                        dist.Independent(dist.Normal(jnp.zeros_like(bety_y_diff), epsilon), 1),
                        obs=bety_y_diff)
+        # Jacobian: flat prior on image positions implies p(β) ∝ ∏|μ_i| in source space.
+        # This factor corrects to a flat source-plane prior: log|∂β/∂θ| = -∑log|μ_i|.
+        numpyro.factor("log_jacobian", -jnp.sum(jnp.log(jnp.abs(model_magnifications))))
 
     def params2kwargs(self, params):
         return {
@@ -655,7 +658,7 @@ class ProbModel_GW_only(hcl.NumpyroModel):
             self.n_images, self.priors, self.image_position_priors)
 
         k_mst_kw = p["k_mst"]() if self.use_mst else None
-        (_, model_time_delays, _, model_dL_eff,
+        (_, model_time_delays, model_magnifications, model_dL_eff,
          _, _, betx_x_diff, bety_y_diff) = compute_gw_from_images(
             x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL, k_mst=k_mst_kw)
 
@@ -679,6 +682,9 @@ class ProbModel_GW_only(hcl.NumpyroModel):
         numpyro.sample('bety_y_diff',
                        dist.Independent(dist.Normal(jnp.zeros_like(bety_y_diff), epsilon), 1),
                        obs=bety_y_diff)
+        # Jacobian: flat prior on image positions implies p(β) ∝ ∏|μ_i| in source space.
+        # This factor corrects to a flat source-plane prior: log|∂β/∂θ| = -∑log|μ_i|.
+        numpyro.factor("log_jacobian", -jnp.sum(jnp.log(jnp.abs(model_magnifications))))
 
 
 # ---------------------------------------------------------------------------
