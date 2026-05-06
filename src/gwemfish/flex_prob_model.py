@@ -347,7 +347,7 @@ class FlexProbModelGWOnly(hcl.NumpyroModel):
         )
         # Jacobian: flat prior on image positions implies p(β) ∝ ∏|μ_i| in source space.
         # This factor corrects to a flat source-plane prior: log|∂β/∂θ| = -∑log|μ_i|.
-        # numpyro.factor("log_jacobian", -jnp.sum(jnp.log(jnp.abs(model_magnifications))))
+        numpyro.factor("log_jacobian", -jnp.sum(jnp.log(jnp.abs(model_magnifications))))
 
     def all_flat_keys(self) -> List[str]:
         base = flat_keys(self.entries)
