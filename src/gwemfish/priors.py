@@ -88,3 +88,21 @@ DEFAULT_IMAGE_POSITION_PRIORS_GW = {
     "maxy": 20.0,
 }
 
+# Bounds for Nautilus source-plane sampling.
+# Values are (lo, hi) tuples used to build scipy distributions in nautilus_inference.py.
+# Override via cfg['gw']['source_plane_bounds'].
+DEFAULT_PRIORS_GW_SOURCE_PLANE = {
+    "lens_theta_E":  (0.1,  10.0),
+    "lens_e1":       (-1.0,  1.0),   # TruncatedNormal in practice; these are hard bounds
+    "lens_e2":       (-1.0,  1.0),
+    "lens_gamma":    (1.1,   3.0),
+    "lens_gamma1":   (-0.3,  0.3),
+    "lens_gamma2":   (-0.3,  0.3),
+    "lens_center_x": (-1.0,  1.0),   # Normal(0,0.1) clipped; these are hard bounds
+    "lens_center_y": (-1.0,  1.0),
+    "T_star":        (1e1,   1e12),
+    "dL":            (10.0,  50000.0),
+    "y0gw":          (-1.0,  1.0),   # uniform source-plane position (arcsec)
+    "y1gw":          (-1.0,  1.0),
+}
+

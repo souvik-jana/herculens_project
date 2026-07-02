@@ -990,6 +990,56 @@ def _resolve_gw_n_images(ctx: Dict[str, Any], cfg_full: Dict[str, Any]) -> int:
     return n_images
 
 
+def _run_nautilus_inference(ctx, mode, cfg_full):
+    """Dispatch to Nautilus nested-sampler source-plane inference.
+
+    Called by run_inference when method='nautilus'. Builds the prior +
+    log_likelihood via nautilus_inference.py and returns (samples, truths_dict)
+    in the same format as the MCMC path.
+    """
+    from .nautilus_inference import (
+        build_gw_source_plane_problem,
+        build_em_gw_source_plane_problem,
+        run_nautilus,
+    )
+
+    if mode == "GW-only":
+        prior, loglike, param_names = build_gw_source_plane_problem(ctx, cfg_full)
+    elif mode == "EM+GW":
+        prior, loglike, param_names = build_em_gw_source_plane_problem(ctx, cfg_full)
+    else:
+        raise ValueError("method='nautilus' supports mode 'GW-only' and 'EM+GW' only")
+
+    _skip = {"solver_backend", "solver_validation_tol"}
+    n_cfg = cfg_full.get("nautilus", {})
+    # run_kwargs are forwarded to sampler.run(); top-level keys go to run_nautilus
+    run_kwarg_keys = {"n_eff", "n_like_max", "discard_exploration", "timeout"}
+    run_kwargs = {k: v for k, v in n_cfg.items() if k in run_kwarg_keys}
+    nautilus_top = {k: v for k, v in n_cfg.items()
+                    if k not in _skip and k not in run_kwarg_keys}
+    samples = run_nautilus(prior, loglike, run_kwargs=run_kwargs, **nautilus_top)
+
+    truth_params = ctx.get("truth_params", {}) or {}
+    truths_dict  = {k: float(truth_params[k]) for k in param_names if k in truth_params}
+
+    out_cfg  = cfg_full.get("output", {})
+    out_dir  = out_cfg.get("output_dir")
+    save_samples_path = _resolve_output_path(out_cfg.get("save_samples_path"), out_dir)
+    save_truths_path  = _resolve_output_path(out_cfg.get("save_truths_path"), out_dir)
+    save_json_path    = _resolve_output_path(_output_json_path(out_cfg), out_dir)
+    save_samples_path = _append_tag_to_path(save_samples_path, "nautilus")
+    save_truths_path  = _append_tag_to_path(save_truths_path, "nautilus")
+    save_json_path    = _append_tag_to_path(save_json_path, "nautilus")
+    _ensure_parent_dir(save_samples_path)
+    _ensure_parent_dir(save_truths_path)
+    _save_dict_npz(save_samples_path, samples)
+    _save_dict_npz(save_truths_path, truths_dict)
+    _save_pipeline_json(save_json_path, ctx=ctx,
+                        samples_image_plane=samples,
+                        truths_image_plane=truths_dict)
+    return samples, truths_dict
+
+
 def run_inference(
     ctx: Dict[str, Any],
     *,
@@ -1020,8 +1070,8 @@ def run_inference(
     if mode not in ("EM+GW", "GW-only", "EM-only"):
         raise ValueError("mode must be one of: 'EM+GW', 'GW-only', 'EM-only'")
     method_norm = method.strip().lower()
-    if method_norm not in ("deriv-approx", "fisher", "hmc", "hmc-informed"):
-        raise ValueError("method must be one of: 'deriv-approx', 'fisher', 'HMC', 'HMC-informed'")
+    if method_norm not in ("deriv-approx", "fisher", "hmc", "hmc-informed", "nautilus"):
+        raise ValueError("method must be one of: 'deriv-approx', 'fisher', 'HMC', 'HMC-informed', 'nautilus'")
 
     # Lazy imports inside this function.
     import jax
@@ -1097,6 +1147,10 @@ def run_inference(
 
     # Combined priors: internal defaults first, user overrides last.
     priors_combined = {**priors_internal, **priors_image_pos, **priors_user_norm}
+
+    # --- Nautilus source-plane path: bypass NumPyro model and Fisher entirely ---
+    if method_norm == "nautilus":
+        return _run_nautilus_inference(ctx, mode, cfg_full)
 
     use_layout = bool(cfg_full.get("use_parameter_layout", False))
     priors_flex: Optional[Dict[str, Any]] = None
