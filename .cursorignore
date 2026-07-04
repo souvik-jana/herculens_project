@@ -1,0 +1,30 @@
+# Notebooks (large, duplicate scripts; open manually if needed)
+**/*.ipynb
+notebooks/
+examples/notebooks/
+
+# Pipeline / inference outputs (local, often large)
+**/outputs/
+
+# DVC internals
+.dvc/cache/
+.dvc/tmp/
+
+# Large binaries (exist locally even when gitignored)
+*.pkl
+*.h5
+*.hdf5
+*.png
+*.pdf
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Python / env noise
+__pycache__/
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
