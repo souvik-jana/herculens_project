@@ -31,6 +31,7 @@ from .nautilus_inference import (
     run_nautilus,
     build_gw_source_plane_problem,
     build_em_gw_source_plane_problem,
+    build_em_only_problem,
     validate_helens_solver,
 )
 from .fisher import compute_fisher
@@ -95,6 +96,7 @@ __all__ = [
     'run_nautilus',
     'build_gw_source_plane_problem',
     'build_em_gw_source_plane_problem',
+    'build_em_only_problem',
     'validate_helens_solver',
     'compute_fisher',
     'arcsecond_to_radians',

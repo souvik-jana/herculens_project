@@ -714,6 +714,94 @@ def build_em_gw_source_plane_problem(ctx, cfg):
     return prior, log_likelihood, param_names
 
 
+def build_em_only_problem(ctx, cfg):
+    """Build (nautilus.Prior, log_likelihood) for EM-only inference.
+
+    Image-plane EM likelihood only — no GW, no lens-equation solver.
+    Requires flex parameter layout (``use_parameter_layout=True``).
+
+    Args:
+        ctx: Pipeline context from setup_em_observation.
+        cfg: User cfg dict.
+
+    Returns:
+        prior, log_likelihood, param_names
+    """
+    from .simple_pipeline import _deep_merge_dict, make_default_cfg
+
+    cfg_full = _deep_merge_dict(ctx.get("cfg", make_default_cfg()), cfg)
+    if not bool(cfg_full.get("use_parameter_layout")):
+        raise ValueError(
+            "build_em_only_problem requires use_parameter_layout=True "
+            "(flex lens0_*/source0_*/light0_* names)."
+        )
+
+    lens_image   = ctx["lens_image"]
+    noise        = ctx["noise_inf"]
+    em_obs       = ctx["em_obs"]
+    truth_params = ctx.get("truth_params", {})
+    em_data      = jnp.array(em_obs["data"])
+
+    from .parameter_layout import (
+        build_parameter_layout, build_priors_registry, unpack_to_kwargs,
+    )
+    from .config import DEFAULT_KWARGS_LENS_LIGHT, DEFAULT_KWARGS_SOURCE
+
+    em_sec   = cfg_full.get("em") or {}
+    ks_tmpl  = em_sec.get("kwargs_source") or DEFAULT_KWARGS_SOURCE
+    kll_tmpl = em_sec.get("kwargs_lens_light") or DEFAULT_KWARGS_LENS_LIGHT
+    entries, _ = build_parameter_layout(
+        lens_image,
+        kwargs_lens=ctx["kwargs_lens"],
+        kwargs_source=ks_tmpl,
+        kwargs_lens_light=kll_tmpl,
+    )
+    registry = build_priors_registry(entries, lens_image=lens_image, user_priors=None)
+    default_dists, registry_fixed = _layout_defaults_from_registry(entries, registry)
+    default_dists["noise_sigma_bkg"] = _EM_EXTRA_DEFAULT_DISTS["noise_sigma_bkg"](None)
+
+    n_mass       = len(lens_image.MassModel.func_list)
+    n_source     = len(lens_image.SourceModel.func_list)
+    n_lens_light = len(lens_image.LensLightModel.func_list)
+
+    bounds = DEFAULT_PRIORS_GW_SOURCE_PLANE
+    cfg_priors = cfg_full.get("priors", {})
+    scipy_overrides, cfg_fixed = _parse_cfg_priors(cfg_priors, default_dists, bounds)
+    fixed_params = {**registry_fixed, **cfg_fixed}
+    prior = _build_nautilus_prior(default_dists, bounds, scipy_overrides, fixed_params)
+
+    if fixed_params:
+        print(f"  Fixed params (not sampled): {list(fixed_params.keys())}")
+
+    def log_likelihood(params):
+        full = {**fixed_params, **params}
+        kwargs_lens, kwargs_source, kwargs_lens_light = unpack_to_kwargs(
+            full, entries, n_mass=n_mass,
+            n_source=n_source, n_lens_light=n_lens_light,
+        )
+        sigma_bkg   = float(full["noise_sigma_bkg"])
+        model_image = lens_image.model(
+            kwargs_lens=kwargs_lens,
+            kwargs_source=kwargs_source,
+            kwargs_lens_light=kwargs_lens_light,
+        )
+        model_var = noise.C_D_model(model_image, background_rms=sigma_bkg)
+        return float(
+            jnp.sum(-0.5 * ((em_data - model_image) ** 2 / model_var
+                             + jnp.log(2 * jnp.pi * model_var)))
+        )
+
+    print("Warming up EM-only log_likelihood (triggers JAX compilation)...")
+    try:
+        lv = log_likelihood(dict(truth_params))
+        print(f"  warm-up log_likelihood = {lv:.4f}")
+    except Exception as e:
+        warnings.warn(f"Warm-up call failed: {e}")
+
+    param_names = list(prior.keys)
+    return prior, log_likelihood, param_names
+
+
 def run_nautilus(prior, log_likelihood, *,
                  n_live=500, filepath=None, verbose=True,
                  resume=True, run_kwargs=None):

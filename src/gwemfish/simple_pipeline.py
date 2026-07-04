@@ -1000,6 +1000,7 @@ def _run_nautilus_inference(ctx, mode, cfg_full):
     from .nautilus_inference import (
         build_gw_source_plane_problem,
         build_em_gw_source_plane_problem,
+        build_em_only_problem,
         run_nautilus,
     )
 
@@ -1007,8 +1008,12 @@ def _run_nautilus_inference(ctx, mode, cfg_full):
         prior, loglike, param_names = build_gw_source_plane_problem(ctx, cfg_full)
     elif mode == "EM+GW":
         prior, loglike, param_names = build_em_gw_source_plane_problem(ctx, cfg_full)
+    elif mode == "EM-only":
+        prior, loglike, param_names = build_em_only_problem(ctx, cfg_full)
     else:
-        raise ValueError("method='nautilus' supports mode 'GW-only' and 'EM+GW' only")
+        raise ValueError(
+            "method='nautilus' supports mode 'GW-only', 'EM+GW', and 'EM-only' only"
+        )
 
     _skip = {"solver_backend", "solver_validation_tol"}
     n_cfg = cfg_full.get("nautilus", {})
