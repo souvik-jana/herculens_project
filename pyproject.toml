@@ -24,7 +24,7 @@ dependencies = [
     "scienceplots",
     "scipy",
     "utax",
-   # "herculens @ git+https://github.com/Herculens/herculens.git@27acb009ba622e614beb7a674298669e621d546d",
+    # "herculens @ git+https://github.com/Herculens/herculens.git@27acb009ba622e614beb7a674298669e621d546d",
     "herculens @ git+https://github.com/Herculens/herculens.git",
     "utax @ git+https://github.com/aymgal/utax.git",
     "helens @ git+https://github.com/Herculens/helens",
@@ -34,6 +34,9 @@ dependencies = [
     "jax[cpu]>=0.9.0; sys_platform == 'darwin'",
     "jax[cuda12]>=0.9.0; sys_platform == 'linux'",
     "joblib>=1.5.3",
+    "nautilus-sampler",
+    "autofit>=2026.6.30.644",
+    "autolens>=2026.6.30.644",
 ]
 
 [build-system]

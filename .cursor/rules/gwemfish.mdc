@@ -1,0 +1,37 @@
+---
+description: GWEMFISH pipeline conventions — simulate, infer, plot
+globs: src/gwemfish/**,examples/**
+alwaysApply: false
+---
+
+# GWEMFISH pipeline
+
+## Order
+
+1. Build `cfg` with `make_default_cfg()` + overrides (deep-merged).
+2. `ctx = setup_em_observation(cfg)` then `ctx = setup_gw_observation(ctx, cfg)` (skip EM if `em.enabled: false`).
+3. Set `ctx["cfg"]["priors"]` before `run_inference`.
+4. `samples, truths = run_inference(ctx, mode=..., method=..., cfg={small overrides})`.
+5. Plot with `plot_posterior` / `to_source_plane_samples` / `plot_source_posterior`.
+
+## ctx keys
+
+| Key | After | Used for |
+|-----|-------|----------|
+| `ctx["cfg"]` | setup | merged config; priors live here |
+| `ctx["truth_params"]` | setup | truths for plots; `image_x{i}`, `y0gw`/`y1gw` |
+| `ctx["kwargs_lens"]`, `ctx["lens_mass_model"]` | EM | forward models |
+| `ctx["em_obs"]`, `ctx["lens_image"]` | EM | EM likelihood, system plots |
+| `ctx["x_img_gw"]`, `ctx["y_img_gw"]`, `ctx["gw_obs"]` | GW | GW likelihood |
+| `ctx["likelihood"]`, `ctx["fisher"]` | after deriv/fisher setup | H₀, u₀ for nautilus priors |
+
+## Inference
+
+- `mode`: `EM+GW`, `EM-only`, `GW-only`
+- `method`: `fisher`, `deriv-approx`, `hmc`, `hmc-informed`, `nautilus`
+- Priors: float = fixed; omit = model default; `Distribution` or callable = sample
+- Nautilus: set `cfg["nautilus"]`; EM-only often needs deriv-approx first → 5σ Uniform priors from H₀ (see `em_nautilus.py`)
+
+## Scripts
+
+No `main()` wrapper; module-level script body. Use `uv run python`. Copy patterns from `examples/scripts/` — do not hand-roll lens physics.

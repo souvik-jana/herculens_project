@@ -27,6 +27,14 @@ from .parameter_layout import (
 )
 from .flex_prob_model import FlexProbModelEMGW, FlexProbModelEMOnly, FlexProbModelGWOnly
 from .inference import run_mcmc
+from .nautilus_common import run_nautilus, build_em_only_nautilus_problem
+from .nautilus_source_inference import (
+    build_gw_source_plane_problem,
+    build_em_gw_source_plane_problem,
+    build_em_only_problem,
+    validate_helens_solver,
+)
+from .nautilus_image_inference import build_image_plane_problem
 from .fisher import compute_fisher
 from .config import (
     arcsecond_to_radians,
@@ -86,6 +94,13 @@ __all__ = [
     'remove_central_image',
     'setup_jax',
     'run_mcmc',
+    'run_nautilus',
+    'build_gw_source_plane_problem',
+    'build_em_gw_source_plane_problem',
+    'build_em_only_problem',
+    'build_em_only_nautilus_problem',
+    'build_image_plane_problem',
+    'validate_helens_solver',
     'compute_fisher',
     'arcsecond_to_radians',
     'Mpc_to_m',

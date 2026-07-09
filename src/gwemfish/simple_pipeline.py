@@ -990,92 +990,38 @@ def _resolve_gw_n_images(ctx: Dict[str, Any], cfg_full: Dict[str, Any]) -> int:
     return n_images
 
 
-def run_inference(
-    ctx: Dict[str, Any],
-    *,
-    mode: str = "EM+GW",
-    method: str = "deriv-approx",
-    cfg: Optional[Dict[str, Any]] = None,
-) -> Tuple[Dict[str, Any], Dict[str, float]]:
-    """Run inference and return (samples_dict, truths_dict).
-
-    **``deriv-approx``** — MCMC on the Fisher / banana model (``ProbModelFisher*``). Default: plain NUTS.
-    Set ``cfg['inference']['informed']=True`` for Hessian-informed NUTS on that approximate model.
-
-    **``hmc``** — Plain NUTS on the full ``ProbModel`` / ``ProbModel_GW_only`` / ``ProbModel_EM_only``.
-    For Hessian-informed NUTS on the same full model, use ``method='hmc-informed'`` (or ``hmc`` with
-    ``cfg['inference']['informed']=True``).
-
-    **``hmc-informed``** — Same full model as ``hmc``, but always ``run_mcmc_informed`` (Fisher mass
-    matrix). Plain NUTS on the full model is ``method='hmc'`` only; ``informed=False`` is not valid here.
-
-    ``compute_fisher`` always uses the full model to build ``H0`` at the expansion point.
-
-    **Mass sheet (MST)** — Prefer top-level ``cfg['mst'] = {'enabled': bool, 'k_mst': float}``.
-    Legacy ``cfg['gw']['use_mst']`` / ``cfg['gw']['k_mst']`` are still accepted as fallbacks.
-    For inference, ``run_inference`` adds a default ``k_mst`` uniform prior unless
-    ``cfg['priors']['k_mst']`` is set. GW forward uses ``LensImageGW.compute_mst`` so ``k_mst``
-    is JAX-traceable.
-    """
-    if mode not in ("EM+GW", "GW-only", "EM-only"):
-        raise ValueError("mode must be one of: 'EM+GW', 'GW-only', 'EM-only'")
-    method_norm = method.strip().lower()
-    if method_norm not in ("deriv-approx", "fisher", "hmc", "hmc-informed"):
-        raise ValueError("method must be one of: 'deriv-approx', 'fisher', 'HMC', 'HMC-informed'")
-
-    # Lazy imports inside this function.
+def _build_inference_probmodel(ctx, mode, cfg_full):
+    """Build full NumPyro probmodel (same as hmc / deriv-approx path)."""
     import jax
     import jax.numpy as jnp
     import numpyro
     import numpyro.distributions as dist
 
-    from .prob_model import (
-        ProbModel,
-        ProbModelFisher,
-        ProbModelFisher_GW_only,
-        ProbModel_GW_only,
-        ProbModel_EM_only,
-    )
-    from .inference import run_mcmc, run_mcmc_informed
-    from .fisher import compute_fisher
-
-    # Prefer the simulation/setup configuration already attached to `ctx`.
-    # This keeps EM/GW setup choices and derived truth generation consistent
-    # with inference-time settings (image boxes, priors normalization, etc.).
-    cfg_full = _deep_merge_dict(ctx.get("cfg", make_default_cfg()), cfg)
-    setup_seed = cfg_full["inference"]["rng_key"]
-    fisher_seed = int(cfg_full["inference"]["rng_key"])
-    likelihood_seed = int(cfg_full["inference"]["rng_key"])
+    from .prob_model import ProbModel, ProbModel_GW_only, ProbModel_EM_only
 
     priors_user = cfg_full.get("priors", {})
-    priors_user_norm = _normalize_priors_overrides(priors_user, jnp=jnp, numpyro=numpyro, dist=dist)
-
+    priors_user_norm = _normalize_priors_overrides(
+        priors_user, jnp=jnp, numpyro=numpyro, dist=dist,
+    )
     truth_params = ctx.get("truth_params", {}) or {}
     n_images = _resolve_gw_n_images(ctx, cfg_full)
-
     half_width = float(cfg_full["gw"]["image_box_half_width"])
     gw_error_scales = cfg_full["gw"].get("error_scales", {})
-    # Pass GW error scales only when user explicitly overrides them in cfg.
     ctx_cfg = ctx.get("cfg", {}) if isinstance(ctx, dict) else {}
     user_set_gw_error_scales = bool(
-        (isinstance(ctx_cfg, dict) and isinstance(ctx_cfg.get("gw"), dict) and "error_scales" in ctx_cfg.get("gw", {}))
-        or
-        (isinstance(cfg, dict) and isinstance(cfg.get("gw"), dict) and "error_scales" in cfg.get("gw", {}))
+        (isinstance(ctx_cfg, dict) and isinstance(ctx_cfg.get("gw"), dict)
+         and "error_scales" in ctx_cfg.get("gw", {}))
+        or (isinstance(cfg_full.get("gw"), dict) and "error_scales" in cfg_full.get("gw", {}))
     )
 
-    # Internal priors can be injected for special cases; keep empty by default
-    # so model defaults remain fully active unless user overrides explicitly.
-    priors_internal: Dict[str, Any] = {}
-
+    priors_internal = {}
     use_mst, _ = _resolve_mst_settings(cfg_full, ctx=ctx)
     if use_mst and mode in ("EM+GW", "GW-only", "EM-only") and "k_mst" not in priors_user_norm:
         priors_internal["k_mst"] = lambda: numpyro.sample(
             "k_mst", dist.Uniform(-0.99999, 0.99999)
         )
 
-    # Tight image-position priors for GW-only (GW prob model uses flat min/max unless
-    # image_x/i keys exist in the priors registry).
-    priors_image_pos: Dict[str, Any] = {}
+    priors_image_pos = {}
     if mode == "GW-only":
         for i in range(n_images):
             xk = f"image_x{i+1}"
@@ -1095,14 +1041,13 @@ def run_inference(
                 )
             )
 
-    # Combined priors: internal defaults first, user overrides last.
     priors_combined = {**priors_internal, **priors_image_pos, **priors_user_norm}
-
     use_layout = bool(cfg_full.get("use_parameter_layout", False))
-    priors_flex: Optional[Dict[str, Any]] = None
-
-    # Build the correct probabilistic model.
+    entries = None
+    registry = None
     image_position_priors_override = None
+    priors_flex = None
+
     if use_layout:
         from .config import DEFAULT_KWARGS_LENS_LIGHT, DEFAULT_KWARGS_SOURCE
         from .flex_prob_model import FlexProbModelEMGW, FlexProbModelEMOnly, FlexProbModelGWOnly
@@ -1122,13 +1067,13 @@ def run_inference(
                 kwargs_source=kwargs_source,
                 kwargs_lens_light=kwargs_lens_light,
             )
-            priors_reg = build_priors_registry(
+            registry = build_priors_registry(
                 entries,
                 lens_image=ctx["lens_image"],
                 user_priors=priors_user_norm,
             )
             priors_flex = _merge_flex_priors_with_gw_image_pos(
-                priors_reg, priors_internal, priors_image_pos, priors_user_norm
+                registry, priors_internal, priors_image_pos, priors_user_norm
             )
             x_true = [truth_params[f"image_x{i+1}"] for i in range(n_images)]
             y_true = [truth_params[f"image_y{i+1}"] for i in range(n_images)]
@@ -1155,13 +1100,13 @@ def run_inference(
             entries = build_mass_parameter_entries(
                 ctx["lens_mass_model"], kwargs_lens=ctx["kwargs_lens"]
             )
-            priors_reg = build_priors_registry(
+            registry = build_priors_registry(
                 entries,
                 mass_model=ctx["lens_mass_model"],
                 user_priors=priors_user_norm,
             )
             priors_flex = _merge_flex_priors_with_gw_image_pos(
-                priors_reg, priors_internal, priors_image_pos, priors_user_norm
+                registry, priors_internal, priors_image_pos, priors_user_norm
             )
             probmodel = FlexProbModelGWOnly(
                 entries,
@@ -1182,12 +1127,12 @@ def run_inference(
                 kwargs_source=kwargs_source,
                 kwargs_lens_light=kwargs_lens_light,
             )
-            priors_reg = build_priors_registry(
+            registry = build_priors_registry(
                 entries,
                 lens_image=ctx["lens_image"],
                 user_priors=priors_user_norm,
             )
-            priors_flex = {**priors_reg, **priors_internal, **priors_user_norm}
+            priors_flex = {**registry, **priors_internal, **priors_user_norm}
             probmodel = FlexProbModelEMOnly(
                 entries,
                 priors_flex,
@@ -1197,8 +1142,6 @@ def run_inference(
                 use_mst=use_mst,
             )
     elif mode == "EM+GW":
-        # For EM+GW, image positions are handled via image-position prior geometry
-        # (used by ProbModel to sample image_x/y when not overridden in priors).
         x_true = [truth_params[f"image_x{i+1}"] for i in range(n_images)]
         y_true = [truth_params[f"image_y{i+1}"] for i in range(n_images)]
         image_position_priors_override = {
@@ -1207,7 +1150,6 @@ def run_inference(
             "delx": jnp.asarray([2.0 * half_width] * n_images),
             "dely": jnp.asarray([2.0 * half_width] * n_images),
         }
-
         probmodel = ProbModel(
             n_images=n_images,
             gw_observations=ctx["gw_obs"],
@@ -1229,7 +1171,7 @@ def run_inference(
             gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
             use_mst=use_mst,
         )
-    else:  # EM-only
+    else:
         probmodel = ProbModel_EM_only(
             em_observations=ctx["em_obs"],
             lens_image=ctx["lens_image"],
@@ -1237,7 +1179,170 @@ def run_inference(
             priors=priors_combined,
         )
 
-   
+    return {
+        "probmodel": probmodel,
+        "n_images": n_images,
+        "truth_params": truth_params,
+        "half_width": half_width,
+        "use_layout": use_layout,
+        "entries": entries,
+        "registry": registry,
+        "likelihood_seed": int(cfg_full["inference"]["rng_key"]),
+        "priors_flex": priors_flex,
+        "priors_combined": priors_combined,
+        "image_position_priors_override": image_position_priors_override,
+    }
+
+
+def _run_nautilus_source_inference(ctx, mode, cfg_full):
+    """Dispatch Nautilus source-plane nested sampling."""
+    from .nautilus_common import build_em_only_nautilus_problem
+    from .nautilus_source_inference import (
+        build_em_gw_source_plane_problem,
+        build_gw_source_plane_problem,
+    )
+
+    if mode == "GW-only":
+        prior, loglike, param_names = build_gw_source_plane_problem(ctx, cfg_full)
+    elif mode == "EM+GW":
+        prior, loglike, param_names = build_em_gw_source_plane_problem(ctx, cfg_full)
+    elif mode == "EM-only":
+        prior, loglike, param_names = build_em_only_nautilus_problem(ctx, cfg_full)
+    else:
+        raise ValueError(
+            "nautilus-source supports mode 'GW-only', 'EM+GW', and 'EM-only' only"
+        )
+
+    return _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names, "nautilus_source")
+
+
+def _run_nautilus_image_inference(ctx, mode, cfg_full):
+    """Dispatch Nautilus image-plane nested sampling (GW image_x/y sampling)."""
+    from .nautilus_image_inference import build_image_plane_problem
+
+    prior, loglike, param_names = build_image_plane_problem(ctx, mode, cfg_full)
+    return _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names, "nautilus_image")
+
+
+def _finish_nautilus_run(ctx, cfg_full, prior, loglike, param_names, method_tag):
+    from .nautilus_common import run_nautilus
+
+    _skip = {"solver_backend", "solver_validation_tol"}
+    n_cfg = cfg_full.get("nautilus", {})
+    run_kwarg_keys = {"n_eff", "n_like_max", "discard_exploration", "timeout"}
+    run_kwargs = {k: v for k, v in n_cfg.items() if k in run_kwarg_keys}
+    nautilus_top = {k: v for k, v in n_cfg.items()
+                    if k not in _skip and k not in run_kwarg_keys}
+    samples = run_nautilus(prior, loglike, run_kwargs=run_kwargs, **nautilus_top)
+
+    truth_params = ctx.get("truth_params", {}) or {}
+    truths_dict = {k: float(truth_params[k]) for k in param_names if k in truth_params}
+
+    out_cfg = cfg_full.get("output", {})
+    out_dir = out_cfg.get("output_dir")
+    save_samples_path = _resolve_output_path(out_cfg.get("save_samples_path"), out_dir)
+    save_truths_path = _resolve_output_path(out_cfg.get("save_truths_path"), out_dir)
+    save_json_path = _resolve_output_path(_output_json_path(out_cfg), out_dir)
+    save_samples_path = _append_tag_to_path(save_samples_path, method_tag)
+    save_truths_path = _append_tag_to_path(save_truths_path, method_tag)
+    save_json_path = _append_tag_to_path(save_json_path, method_tag)
+    _ensure_parent_dir(save_samples_path)
+    _ensure_parent_dir(save_truths_path)
+    _save_dict_npz(save_samples_path, samples)
+    _save_dict_npz(save_truths_path, truths_dict)
+    _save_pipeline_json(save_json_path, ctx=ctx,
+                        samples_image_plane=samples,
+                        truths_image_plane=truths_dict)
+    return samples, truths_dict
+
+
+def run_inference(
+    ctx: Dict[str, Any],
+    *,
+    mode: str = "EM+GW",
+    method: str = "deriv-approx",
+    cfg: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, float]]:
+    """Run inference and return (samples_dict, truths_dict).
+
+    **``deriv-approx``** — MCMC on the Fisher / banana model (``ProbModelFisher*``). Default: plain NUTS.
+    Set ``cfg['inference']['informed']=True`` for Hessian-informed NUTS on that approximate model.
+
+    **``hmc``** — Plain NUTS on the full ``ProbModel`` / ``ProbModel_GW_only`` / ``ProbModel_EM_only``.
+    For Hessian-informed NUTS on the same full model, use ``method='hmc-informed'`` (or ``hmc`` with
+    ``cfg['inference']['informed']=True``).
+
+    **``hmc-informed``** — Same full model as ``hmc``, but always ``run_mcmc_informed`` (Fisher mass
+    matrix). Plain NUTS on the full model is ``method='hmc'`` only; ``informed=False`` is not valid here.
+
+    **``nautilus-source``** — Nested sampling with source-plane GW (``y0gw``/``y1gw`` + lens solver).
+    **``nautilus-image``** — Nested sampling with image-plane GW (``image_x*``/``image_y*``); EM-only
+    uses the same pixel likelihood as ``nautilus-source``. Sampler settings: ``cfg['nautilus']``.
+
+    ``compute_fisher`` always uses the full model to build ``H0`` at the expansion point.
+
+    **Mass sheet (MST)** — Prefer top-level ``cfg['mst'] = {'enabled': bool, 'k_mst': float}``.
+    Legacy ``cfg['gw']['use_mst']`` / ``cfg['gw']['k_mst']`` are still accepted as fallbacks.
+    For inference, ``run_inference`` adds a default ``k_mst`` uniform prior unless
+    ``cfg['priors']['k_mst']`` is set. GW forward uses ``LensImageGW.compute_mst`` so ``k_mst``
+    is JAX-traceable.
+    """
+    if mode not in ("EM+GW", "GW-only", "EM-only"):
+        raise ValueError("mode must be one of: 'EM+GW', 'GW-only', 'EM-only'")
+    method_norm = method.strip().lower()
+    if method_norm == "nautilus":
+        raise ValueError(
+            "method='nautilus' was removed; use 'nautilus-source' (source-plane GW) "
+            "or 'nautilus-image' (image-plane GW sampling)."
+        )
+    if method_norm not in (
+        "deriv-approx", "fisher", "hmc", "hmc-informed",
+        "nautilus-source", "nautilus-image",
+    ):
+        raise ValueError(
+            "method must be one of: 'deriv-approx', 'fisher', 'HMC', 'HMC-informed', "
+            "'nautilus-source', 'nautilus-image'"
+        )
+
+    # Lazy imports inside this function.
+    import jax
+    import jax.numpy as jnp
+    import numpyro
+    import numpyro.distributions as dist
+
+    from .prob_model import (
+        ProbModel,
+        ProbModelFisher,
+        ProbModelFisher_GW_only,
+        ProbModel_GW_only,
+        ProbModel_EM_only,
+    )
+    from .inference import run_mcmc, run_mcmc_informed
+    from .fisher import compute_fisher
+
+    # Prefer the simulation/setup configuration already attached to `ctx`.
+    # This keeps EM/GW setup choices and derived truth generation consistent
+    # with inference-time settings (image boxes, priors normalization, etc.).
+    cfg_full = _deep_merge_dict(ctx.get("cfg", make_default_cfg()), cfg)
+
+    if method_norm == "nautilus-source":
+        return _run_nautilus_source_inference(ctx, mode, cfg_full)
+    if method_norm == "nautilus-image":
+        return _run_nautilus_image_inference(ctx, mode, cfg_full)
+
+    setup_seed = cfg_full["inference"]["rng_key"]
+    fisher_seed = int(cfg_full["inference"]["rng_key"])
+    likelihood_seed = int(cfg_full["inference"]["rng_key"])
+
+    priors_user = cfg_full.get("priors", {})
+    built = _build_inference_probmodel(ctx, mode, cfg_full)
+    probmodel = built["probmodel"]
+    likelihood_seed = built["likelihood_seed"]
+    truth_params = built["truth_params"]
+    priors_flex = built["priors_flex"]
+    priors_combined = built["priors_combined"]
+    image_position_priors_override = built["image_position_priors_override"]
+
     # Keys to include and expansion point. Fixed literals in ``cfg['priors']`` are held at those
     # values in ``input_params`` but omitted from ``keys_to_include`` so Fisher / deriv-approx does
     # not differentiate w.r.t. them (matches EM+GW behavior where user priors override image boxes).

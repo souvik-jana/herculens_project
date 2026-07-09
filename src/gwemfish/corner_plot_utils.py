@@ -591,6 +591,12 @@ def plot_comparison_corner(
         params = [p for p in params if p in samples_dict1 and p in samples_dict2]
         if len(params) < 1:
             continue
+        if len(params) < 2:
+            print(
+                f"Warning: skip comparison group '{group_name}' — "
+                f"corner overlay needs >= 2 params (got {params})."
+            )
+            continue
 
         samples_grouped1 = {p: samples_dict1[p] for p in params}
         samples_grouped2 = {p: samples_dict2[p] for p in params}
@@ -706,6 +712,12 @@ def plot_multi_comparison_corner(
     for group_name, params in param_groups.items():
         params = [p for p in params if all(p in sd for sd in samples_dicts)]
         if len(params) < 1:
+            continue
+        if len(params) < 2:
+            print(
+                f"Warning: skip comparison group '{group_name}' — "
+                f"corner overlay needs >= 2 params (got {params})."
+            )
             continue
 
         samples_grouped = [{p: sd[p] for p in params} for sd in samples_dicts]

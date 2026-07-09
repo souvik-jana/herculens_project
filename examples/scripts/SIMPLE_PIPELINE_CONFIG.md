@@ -20,6 +20,12 @@ Values are **deep-merged** with `make_default_cfg()` (see `gwemfish/simple_pipel
 | `deriv-approx` | Taylor / “banana” model (`ProbModelFisher*`) | NUTS on approximate likelihood; set `inference.informed` to use Hessian-informed NUTS |
 | `hmc` | Full `ProbModel*` | Plain NUTS; or `inference.informed: true` for informed NUTS on the **full** model |
 | `hmc-informed` | Full `ProbModel*` | Always Hessian-informed NUTS (`informed: false` is invalid) |
+| `nautilus-source` | Source-plane GW (`y0gw`/`y1gw` + lens solver) or EM-only pixel likelihood | Nautilus nested sampling via `cfg['nautilus']`; priors are **scipy** distributions |
+| `nautilus-image` | Image-plane GW (`image_x*`/`image_y*` sampling) or EM-only (same as source) | Same sampler config; full HMC-equivalent GW likelihood via NumPyro probmodel |
+
+`method='nautilus'` was removed — use `nautilus-source` or `nautilus-image`.
+
+Both nautilus methods support `mode` ∈ `EM-only`, `GW-only`, `EM+GW`. EM-only is identical for both (shared pixel likelihood). They do **not** use `inference.num_warmup`, `inference.informed`, or other NUTS chain settings.
 
 `run_inference` merges `cfg` with `ctx["cfg"]`. Per-run overrides (e.g. `output.json_tag`, `inference.informed`) can be a **small** dict.
 
@@ -65,6 +71,12 @@ Gravitational-wave side of the setup.
 - `sigma_dL_eff` — scales effective luminosity-distance terms (`sigma_dL_eff * dL_eff`).
 - `epsilon` — scales image-plane residual channels (`epsilon * ones_like(...)`).
 
+Optional for GW-only **nautilus** source-plane bounds:
+
+- `source_plane_bounds` — e.g. `{"y0gw": (lo, hi), "y1gw": (lo, hi)}` merged with defaults in `build_gw_source_plane_problem`.
+
+`image_box_half_width` applies to deriv-approx/fisher GW-only auto-priors, not the nautilus source-plane builder.
+
 ### `lens`
 
 | Key | Role |
@@ -82,6 +94,41 @@ Registry of **overrides** for inferred parameters. Each value may be:
 - or a **callable** `lambda: numpyro.sample(name, dist...)`.
 
 If a parameter is omitted, the model’s built-in default priors apply.
+
+For `method='nautilus-source'` or `'nautilus-image'`, `cfg['priors']` entries are converted to scipy distributions:
+
+- **Fixed float** → parameter held fixed (not sampled).
+- **`numpyro` `Uniform(low, high)`** → scipy uniform on `[lo, hi]` (typical after a Fisher / deriv-approx precursor run).
+- Other numpyro distributions → converted where supported.
+
+**Recommended EM-only nautilus workflow** (`examples/scripts/em_nautilus.py`):
+
+1. Run `deriv-approx` with `inference.informed: True` first.
+2. Read `ctx['likelihood']['keys_to_include']`, `ctx['likelihood']['u0']`, `ctx['fisher']['H0']`.
+3. Set `priors[key] = dist.Uniform(mu - span*sigma, mu + span*sigma)` with default `span=5` (`sigma = sqrt(diag(inv(-H0)))`).
+4. Set `nautilus.resume: False` (or delete the checkpoint) when priors change.
+5. Run `method='nautilus-source'` (prefer over `nautilus-image` for EM-only).
+
+### `nautilus`
+
+Optional block (not in `make_default_cfg()`). Used when `method='nautilus-source'` or `'nautilus-image'`.
+
+| Key | Default | Role |
+|-----|---------|------|
+| `n_live` | `500` | Live points passed to `nautilus.Sampler`. |
+| `filepath` | `None` | HDF5 checkpoint path; `None` = no checkpoint. |
+| `resume` | `True` | Resume from `filepath` if it exists. |
+| `verbose` | `True` | Print sampler progress. |
+| `n_eff` | (sampler default) | Forwarded to `sampler.run()`. |
+| `n_like_max` | (sampler default) | Forwarded to `sampler.run()`. |
+| `discard_exploration` | (sampler default) | Forwarded to `sampler.run()`. |
+| `timeout` | (sampler default) | Forwarded to `sampler.run()`. |
+| `solver_backend` | `"helens"` | GW / EM+GW image solving: `"helens"` or `"jaxtronomy"`. |
+| `solver_validation_tol` | `0.05` | Max image-position residual [arcsec] when validating helens solver. |
+
+`solver_backend` and `solver_validation_tol` are consumed by problem builders only, not passed to `run_nautilus`.
+
+EM-only nautilus requires `use_parameter_layout=True` (flex `lens0_*` / `source0_*` / `light0_*` names).
 
 ### `inference`
 
@@ -281,6 +328,15 @@ cfg = {
         "json_path": "pipeline_outputs.json",
         "json_tag": None,
     },
+    "nautilus": {
+        "n_live": 1000,
+        "n_eff": 5000,
+        "n_like_max": 500000,
+        "filepath": "outputs/nautilus_checkpoint.hdf5",
+        "resume": False,
+        "verbose": True,
+        "solver_backend": "helens",  # GW / EM+GW only
+    },
 }
 ```
 
@@ -298,10 +354,32 @@ samples, truths = run_inference(
 )
 ```
 
+### Minimal nautilus override
+
+```python
+samples, truths = run_inference(
+    ctx,
+    mode="EM-only",
+    method="nautilus-source",
+    cfg={
+        "output": {"json_tag": "nautilus_source"},
+        "nautilus": {
+            "filepath": "outputs/nautilus_checkpoint.hdf5",
+            "resume": False,
+            "n_live": 1000,
+        },
+    },
+)
+```
+
 ---
 
 ## See also
 
 - `examples/scripts/cfg.py` — `CFG` template and `get_cfg()`.
+- `examples/scripts/em_nautilus.py` — Fisher H₀ priors + nautilus method comparison.
+- `examples/scripts/gw_only_nautilus.py` — GW-only nautilus-source vs deriv-approx vs fisher.
+- `examples/scripts/gw_only_nautilus_image.py` — GW-only nautilus-image (image_x/y sampling).
+- `gwemfish.nautilus_common`, `nautilus_source_inference`, `nautilus_image_inference` — builders and `run_nautilus`.
 - `gwemfish.simple_pipeline.make_default_cfg()` — authoritative defaults.
 - `gwemfish.priors` — default prior registries for EM+GW / GW-only models.
