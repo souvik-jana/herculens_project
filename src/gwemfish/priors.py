@@ -89,7 +89,7 @@ DEFAULT_IMAGE_POSITION_PRIORS_GW = {
 }
 
 # Bounds for Nautilus source-plane sampling.
-# Values are (lo, hi) tuples used to build scipy distributions in nautilus_inference.py.
+# Values are (lo, hi) tuples used to build scipy distributions in nautilus source/image builders.
 # Override via cfg['gw']['source_plane_bounds'].
 DEFAULT_PRIORS_GW_SOURCE_PLANE = {
     "lens_theta_E":  (0.1,  10.0),

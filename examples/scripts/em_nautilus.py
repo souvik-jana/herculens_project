@@ -22,8 +22,8 @@ SYSTEM_PLOT_PATH = "system_observation.png"
 PIPELINE_JSON_BASE = "pipeline_outputs.json"
 COMPARISON_IMAGE_CORNER_PATH = os.path.join(OUTPUT_DIR, "comparison_image_plane_{group_name}.png")
 
-METHODS = ("deriv-approx", "nautilus", "fisher")
-METHOD_COLORS = {"deriv-approx": "C0", "nautilus": "C1", "fisher": "C2"}
+METHODS = ("deriv-approx", "nautilus-source", "fisher")
+METHOD_COLORS = {"deriv-approx": "C0", "nautilus-source": "C1", "fisher": "C2"}
 
 
 def method_tag_dir(method):
@@ -34,7 +34,7 @@ def inference_cfg(method):
     cfg = {"output": {"json_tag": method}}
     if method == "deriv-approx":
         cfg["inference"] = {"informed": True}
-    if method == "nautilus":
+    if method == "nautilus-source":
         cfg["nautilus"] = {
             "filepath": NAUTILUS_CHECKPOINT,
             "resume": NAUTILUS_RESUME,
@@ -225,8 +225,8 @@ for i, key in enumerate(keys):
     ctx["cfg"]["priors"][key] = dist.Uniform(lo, hi)
     print(f"  Nautilus prior {key}: Uniform({lo:.4g}, {hi:.4g})  [mu={mu:.4g}, sigma={sig:.4g}]")
 
-samples_nautilus, _ = run_method_and_plot("nautilus")
-samples_by_method["nautilus"] = samples_nautilus
+samples_nautilus, _ = run_method_and_plot("nautilus-source")
+samples_by_method["nautilus-source"] = samples_nautilus
 
 samples_fisher, _ = run_method_and_plot("fisher")
 samples_by_method["fisher"] = samples_fisher

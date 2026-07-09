@@ -76,9 +76,9 @@ e2_true    = float(tp["lens0_e2"])
 print(f"\nTrue lens0_gamma = {gamma_true}, lens0_e2 = {e2_true}")
 print("Free params: lens0_gamma, lens0_e2 (all others fixed to truth)\n")
 
-samples, truths = run_inference(ctx, mode="GW-only", method="nautilus", cfg={
+samples, truths = run_inference(ctx, mode="GW-only", method="nautilus-source", cfg={
     "nautilus": {"n_eff": 1000},
-    "output": {"output_dir": OUTPUT_DIR, "json_path": "pipeline_outputs.json", "json_tag": "nautilus_2d"},
+    "output": {"output_dir": OUTPUT_DIR, "json_path": "pipeline_outputs.json", "json_tag": "nautilus_source_2d"},
 })
 
 g  = np.asarray(samples["lens0_gamma"])

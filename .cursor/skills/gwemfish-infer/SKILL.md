@@ -25,9 +25,12 @@ Read `gwemfish-local` (`~/.cursor/skills/gwemfish-local/`) for repo paths if set
 | Derivative approx | `deriv-approx` |
 | Full HMC | `hmc` |
 | HMC informed | `hmc-informed` |
-| Nautilus | `nautilus` |
+| Nautilus source-plane | `nautilus-source` |
+| Nautilus image-plane | `nautilus-image` |
 
-Multi-method comparison allowed (e.g. deriv-approx + nautilus + fisher in `em_nautilus.py`).
+Multi-method comparison allowed (e.g. deriv-approx + nautilus-source + fisher in `em_nautilus.py`).
+
+For GW modes, ask which Nautilus variant when unclear: **source-plane** (`y0gw`/`y1gw`) vs **image-plane** (`image_x*`/`image_y*`). EM-only: either name works; prefer `nautilus-source`.
 
 ## Question 3 — Informed NUTS (deriv-approx or hmc only)
 
@@ -35,9 +38,35 @@ Ask: use Hessian-informed NUTS?
 
 - **Default yes** → `cfg["inference"] = {"informed": True}`
 - No → `{"informed": False}`
-- N/A for `fisher`, `hmc-informed`, `nautilus`
+- N/A for `fisher`, `hmc-informed`, `nautilus-source`, `nautilus-image`
 
-## Question 4 — Nautilus (when method includes nautilus)
+## Question 3.5 — epsilon and image-plane/source-plane comparability
+
+**Applies when comparing any image-plane sampler to `nautilus-source`.** Image-plane methods share `ProbModel` and `cfg["gw"]["error_scales"]["epsilon"]` (default **0.005**):
+
+| Image-plane (`ProbModel`) | Source-plane (no `ProbModel`) |
+|---------------------------|-------------------------------|
+| `deriv-approx`, `hmc`, `hmc-informed`, `nautilus-image` | `nautilus-source` only |
+
+Inside `ProbModel.model()` (`flex_prob_model.py` / `prob_model.py`), `epsilon` sets a soft `Normal(0, epsilon)` on `betx_x_diff`/`bety_y_diff` (images must ray-shoot to one source) plus `log_jacobian = -sum(log|mu_i|)`. `nautilus-source` forward-solves from sampled `y0gw`/`y1gw` — no equivalent term.
+
+**Consequence:** `to_source_plane_samples` from any image-plane method has a scatter floor from `epsilon`, not just the GW likelihood. Loose default (`0.005`) can make image-plane methods look ~2–3× wider than `nautilus-source` on the same system even when both are correct.
+
+**Before comparing to `nautilus-source`:** tighten epsilon (start **`1e-4`**):
+
+```python
+ctx["cfg"]["gw"]["error_scales"]["epsilon"] = 1e-4
+```
+
+- **NUTS** (`deriv-approx`, `hmc`): if divergences/stiffness, back off (e.g. `1e-3`) and/or raise `num_warmup`.
+- **Nautilus-image**: sharper surface — raise `n_live` / `n_eff` if acceptance slows.
+- **Diagnostic:** per-sample `y0gw_std` / `y1gw_std` from `image_to_source.image_samples_to_source_samples` — if large vs posterior width, `epsilon` dominates scatter; comparison to `nautilus-source` is not apples-to-apples yet.
+
+**Does NOT apply:** two image-plane methods vs each other (e.g. `deriv-approx` vs `nautilus-image`) — same `ProbModel`, same `epsilon`; they should agree regardless of epsilon. If they disagree, treat as a real bug (prior mismatch, non-convergence, solver backend, wiring) — not an epsilon caveat.
+
+See `gwemfish-plot` skill for overlay interpretation.
+
+## Question 4 — Nautilus variant (when method includes nautilus-source or nautilus-image)
 
 1. **Precursor** (default: deriv-approx with `informed: True`; alt: fisher)
 2. **Sigma span** (default: **5.0**) — build Uniform priors from H₀:
@@ -69,7 +98,7 @@ for i, key in enumerate(keys):
 ## Execution
 
 1. Set base `ctx["cfg"]["priors"]` from mode example (`em_gw_new.py`, `gw_only.py`, `em_nautilus.py`).
-2. Nautilus: precursor run → H₀ priors → `run_inference(..., method="nautilus")`.
+2. Nautilus: precursor run → H₀ priors → `run_inference(..., method="nautilus-source")` (EM-only) or choose source vs image for GW.
 3. Else: `samples, truths = run_inference(ctx, mode=..., method=..., cfg={overrides})`.
 4. Optional: `output.json_tag`, `save_samples_path`, pipeline JSON.
 

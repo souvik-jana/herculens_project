@@ -19,9 +19,9 @@ is_background: false
 Before `run_inference`, run the AskQuestion workflow from `gwemfish-infer`:
 
 - Mode: EM-only / GW-only / EM+GW
-- Method: fisher / deriv-approx / hmc / hmc-informed / nautilus
+- Method: fisher / deriv-approx / hmc / hmc-informed / nautilus-source / nautilus-image
 - Informed NUTS for deriv-approx/hmc — **default yes**
-- Nautilus: deriv-approx precursor → 5σ Uniform from H₀ — **default span 5**
+- Nautilus: deriv-approx precursor → 5σ Uniform from H₀ — **default span 5**; GW: ask source-plane vs image-plane
 
 Skip questions only if user already specified all choices.
 
@@ -31,7 +31,7 @@ simulate → set priors → infer → plot → optional source plane
 
 ## Nautilus EM-only
 
-Mirror `examples/scripts/em_nautilus.py`: deriv-approx first, build priors from `ctx["fisher"]["H0"]`, then nautilus with `resume: False` on prior change.
+Mirror `examples/scripts/em_nautilus.py`: deriv-approx first, build priors from `ctx["fisher"]["H0"]`, then `nautilus-source` with `resume: False` on prior change.
 
 ## Rules
 

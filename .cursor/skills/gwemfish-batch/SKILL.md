@@ -5,6 +5,8 @@ description: Batch GWEMFISH mock studies via lensing-mock YAML configs, simulate
 
 # GWEMFISH batch (lensing-mock)
 
+For the **full** lensing-mock agent (PAL mirror, HCL↔PAL tests, infer modes, decision tree), use **`/lensing-mock`**.
+
 Read `gwemfish-local` for `LENSING_MOCK_ROOT` (in `~/.cursor/skills/gwemfish-local/`). If missing, use sibling `../lensing-mock` relative to this repo root. Full schemas: `DATA.md`, `CONTEXT.md` under that root.
 
 All commands from `LENSING_MOCK_ROOT`:

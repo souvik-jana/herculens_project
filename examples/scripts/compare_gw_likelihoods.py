@@ -88,7 +88,7 @@ def naut_at(gamma, e2):
 
 
 def deriv_fixed_images_td_dL(gamma, e2):
-    from gwemfish.nautilus_inference import _gw_loglike_from_images
+    from gwemfish.nautilus_source_inference import _gw_loglike_from_images
     from gwemfish.parameter_layout import build_mass_parameter_entries, unpack_to_kwargs
     entries = build_mass_parameter_entries(ctx["lens_mass_model"], kwargs_lens=ctx["kwargs_lens"])
     full = {k: float(v) for k, v in tp.items() if not k.startswith("image_")}

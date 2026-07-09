@@ -26,7 +26,8 @@ Read the closest script before inventing patterns:
 | Minimal pipeline | `examples/scripts/example_simple_pipeline.py` |
 | EM+GW method comparison | `examples/scripts/em_gw_new.py` |
 | EM-only nautilus vs deriv-approx vs fisher | `examples/scripts/em_nautilus.py` |
-| GW-only nautilus | `examples/scripts/gw_only_nautilus.py` |
+| GW-only nautilus (source-plane) | `examples/scripts/gw_only_nautilus.py` |
+| GW-only nautilus (image-plane) | `examples/scripts/gw_only_nautilus_image.py` |
 | Full cfg template | `examples/scripts/cfg.py` + `SIMPLE_PIPELINE_CONFIG.md` |
 | ctx inspection | `examples/notebooks/simple_pipeline_demonstration.ipynb` |
 
@@ -44,7 +45,8 @@ Read the closest script before inventing patterns:
 | `deriv-approx` | Taylor model + NUTS; set `inference.informed` |
 | `hmc` | Full model NUTS |
 | `hmc-informed` | Always informed NUTS |
-| `nautilus` | Nested sampling via `cfg["nautilus"]` |
+| `nautilus-source` | Source-plane GW nested sampling |
+| `nautilus-image` | Image-plane GW nested sampling (EM-only same as source) |
 
 Set `ctx["cfg"]["priors"]` before `run_inference`. Float = fixed; numpyro `Distribution` = sampled.
 

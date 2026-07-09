@@ -49,6 +49,21 @@ plot_source_posterior(
 
 Use `source_out["source_plane_samples_plot"]` if passing dict from `to_source_plane_samples`.
 
+> If an overlaid image-plane method's source-plane contour (deriv-approx, hmc,
+> hmc-informed, or **nautilus-image**) looks much wider than a **nautilus-source**
+> contour for the same system, check `cfg["gw"]["error_scales"]["epsilon"]` before
+> reading it as a real disagreement — a loose `epsilon` (default 0.005) inflates any
+> image-plane method's converted posterior independent of the actual constraining power
+> of the data; nautilus-source alone is exempt (see `gwemfish-infer` skill, "epsilon and
+> image-plane/source-plane comparability").
+>
+> This does NOT apply to a mismatch **between two image-plane methods** (e.g.
+> deriv-approx vs. nautilus-image) — they share the same `ProbModel` and the same
+> `epsilon`, so they should overlay closely regardless of its value. If those two
+> disagree with each other, epsilon is not the explanation — treat it as a real bug to
+> investigate (prior mismatch, non-convergence, solver-backend difference), not a
+> comparability caveat.
+
 ## System plot overlay
 
 `cfg["output"]["system_plot_image_overlay"]`: `"gw"`, `"em"`, `"both"`, `"none"`.

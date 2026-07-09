@@ -14,7 +14,8 @@
 | `deriv-approx` | NUTS on Taylor model; `inference.informed` |
 | `hmc` | NUTS full model; optional `informed` |
 | `hmc-informed` | Always informed NUTS |
-| `nautilus` | Nested sampling; ignores NUTS chain settings |
+| `nautilus-source` | Source-plane GW nested sampling (`y0gw`/`y1gw`) |
+| `nautilus-image` | Image-plane GW nested sampling (`image_x*`/`image_y*`); EM-only same as source |
 
 ## inference keys
 
@@ -52,6 +53,7 @@ Changing priors after a checkpoint → set `resume: False` or delete the `.hdf5`
 
 ## Example scripts
 
-- `em_nautilus.py` — deriv-approx → 5σ H₀ → nautilus → fisher comparison
+- `em_nautilus.py` — deriv-approx → 5σ H₀ → nautilus-source → fisher comparison
 - `em_gw_new.py` — EM+GW deriv-approx vs fisher
-- `gw_only_nautilus.py` — GW-only three-way comparison
+- `gw_only_nautilus.py` — GW-only nautilus-source three-way comparison
+- `gw_only_nautilus_image.py` — GW-only nautilus-image vs deriv-approx vs fisher

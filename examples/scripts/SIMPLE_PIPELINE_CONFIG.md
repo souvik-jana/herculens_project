@@ -20,9 +20,12 @@ Values are **deep-merged** with `make_default_cfg()` (see `gwemfish/simple_pipel
 | `deriv-approx` | Taylor / “banana” model (`ProbModelFisher*`) | NUTS on approximate likelihood; set `inference.informed` to use Hessian-informed NUTS |
 | `hmc` | Full `ProbModel*` | Plain NUTS; or `inference.informed: true` for informed NUTS on the **full** model |
 | `hmc-informed` | Full `ProbModel*` | Always Hessian-informed NUTS (`informed: false` is invalid) |
-| `nautilus` | Full model (mode-dependent builder in `nautilus_inference.py`) | Nautilus nested sampling via `cfg['nautilus']`; priors are **scipy** distributions from `cfg['priors']` overrides |
+| `nautilus-source` | Source-plane GW (`y0gw`/`y1gw` + lens solver) or EM-only pixel likelihood | Nautilus nested sampling via `cfg['nautilus']`; priors are **scipy** distributions |
+| `nautilus-image` | Image-plane GW (`image_x*`/`image_y*` sampling) or EM-only (same as source) | Same sampler config; full HMC-equivalent GW likelihood via NumPyro probmodel |
 
-`nautilus` supports `mode` ∈ `EM-only`, `GW-only`, `EM+GW`. It does **not** use `inference.num_warmup`, `inference.informed`, or other NUTS chain settings.
+`method='nautilus'` was removed — use `nautilus-source` or `nautilus-image`.
+
+Both nautilus methods support `mode` ∈ `EM-only`, `GW-only`, `EM+GW`. EM-only is identical for both (shared pixel likelihood). They do **not** use `inference.num_warmup`, `inference.informed`, or other NUTS chain settings.
 
 `run_inference` merges `cfg` with `ctx["cfg"]`. Per-run overrides (e.g. `output.json_tag`, `inference.informed`) can be a **small** dict.
 
@@ -92,7 +95,7 @@ Registry of **overrides** for inferred parameters. Each value may be:
 
 If a parameter is omitted, the model’s built-in default priors apply.
 
-For `method='nautilus'`, `cfg['priors']` entries are converted to scipy distributions:
+For `method='nautilus-source'` or `'nautilus-image'`, `cfg['priors']` entries are converted to scipy distributions:
 
 - **Fixed float** → parameter held fixed (not sampled).
 - **`numpyro` `Uniform(low, high)`** → scipy uniform on `[lo, hi]` (typical after a Fisher / deriv-approx precursor run).
@@ -104,11 +107,11 @@ For `method='nautilus'`, `cfg['priors']` entries are converted to scipy distribu
 2. Read `ctx['likelihood']['keys_to_include']`, `ctx['likelihood']['u0']`, `ctx['fisher']['H0']`.
 3. Set `priors[key] = dist.Uniform(mu - span*sigma, mu + span*sigma)` with default `span=5` (`sigma = sqrt(diag(inv(-H0)))`).
 4. Set `nautilus.resume: False` (or delete the checkpoint) when priors change.
-5. Run `method='nautilus'`.
+5. Run `method='nautilus-source'` (prefer over `nautilus-image` for EM-only).
 
 ### `nautilus`
 
-Optional block (not in `make_default_cfg()`). Used when `method='nautilus'`.
+Optional block (not in `make_default_cfg()`). Used when `method='nautilus-source'` or `'nautilus-image'`.
 
 | Key | Default | Role |
 |-----|---------|------|
@@ -357,9 +360,9 @@ samples, truths = run_inference(
 samples, truths = run_inference(
     ctx,
     mode="EM-only",
-    method="nautilus",
+    method="nautilus-source",
     cfg={
-        "output": {"json_tag": "nautilus"},
+        "output": {"json_tag": "nautilus_source"},
         "nautilus": {
             "filepath": "outputs/nautilus_checkpoint.hdf5",
             "resume": False,
@@ -375,7 +378,8 @@ samples, truths = run_inference(
 
 - `examples/scripts/cfg.py` — `CFG` template and `get_cfg()`.
 - `examples/scripts/em_nautilus.py` — Fisher H₀ priors + nautilus method comparison.
-- `examples/scripts/gw_only_nautilus.py` — GW-only nautilus vs deriv-approx vs fisher.
-- `gwemfish.nautilus_inference` — `build_*_problem`, `run_nautilus`.
+- `examples/scripts/gw_only_nautilus.py` — GW-only nautilus-source vs deriv-approx vs fisher.
+- `examples/scripts/gw_only_nautilus_image.py` — GW-only nautilus-image (image_x/y sampling).
+- `gwemfish.nautilus_common`, `nautilus_source_inference`, `nautilus_image_inference` — builders and `run_nautilus`.
 - `gwemfish.simple_pipeline.make_default_cfg()` — authoritative defaults.
 - `gwemfish.priors` — default prior registries for EM+GW / GW-only models.
