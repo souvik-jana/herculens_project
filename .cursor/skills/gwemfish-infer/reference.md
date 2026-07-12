@@ -47,6 +47,10 @@ EM-only nautilus requires `use_parameter_layout=True`.
 - numpyro Distribution → sampled (Uniform for nautilus H₀ workflow)
 - callable → numpyro sample wrapper
 
+### Nautilus Fisher H₀ priors (`NAUTILUS_SIGMA_SPAN`)
+
+After deriv-approx (or fisher), set `ctx["cfg"]["priors"][key] = Uniform(mu ± span*sigma)` from `ctx["fisher"]["H0"]` before nautilus. Convention: **span = 5.0** (EM-only, `em_nautilus.py`); **span = 2.0** (GW-only, `gw_only_nautilus.py`, `gw_only_nautilus_image.py`). See Question 4 in SKILL.md.
+
 ## Nautilus resume caveat
 
 Changing priors after a checkpoint → set `resume: False` or delete the `.hdf5` file.
@@ -55,5 +59,5 @@ Changing priors after a checkpoint → set `resume: False` or delete the `.hdf5`
 
 - `em_nautilus.py` — deriv-approx → 5σ H₀ → nautilus-source → fisher comparison
 - `em_gw_new.py` — EM+GW deriv-approx vs fisher
-- `gw_only_nautilus.py` — GW-only nautilus-source three-way comparison
-- `gw_only_nautilus_image.py` — GW-only nautilus-image vs deriv-approx vs fisher
+- `gw_only_nautilus.py` — deriv-approx → 2σ H₀ → nautilus-source → fisher comparison
+- `gw_only_nautilus_image.py` — deriv-approx → 2σ H₀ → nautilus-image vs deriv-approx vs fisher

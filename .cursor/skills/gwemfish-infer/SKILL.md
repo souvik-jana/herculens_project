@@ -69,31 +69,52 @@ See `gwemfish-plot` skill for overlay interpretation.
 ## Question 4 — Nautilus variant (when method includes nautilus-source or nautilus-image)
 
 1. **Precursor** (default: deriv-approx with `informed: True`; alt: fisher)
-2. **Sigma span** (default: **5.0**) — build Uniform priors from H₀:
+2. **Tight Fisher H₀ priors** — after precursor, set Uniform priors from H₀ before nautilus:
+
+| Context | Default `NAUTILUS_SIGMA_SPAN` | Example script |
+|---------|------------------------------|----------------|
+| EM-only nautilus | **5.0** | `em_nautilus.py` |
+| GW-only nautilus (source or image) | **2.0** | `gw_only_nautilus.py`, `gw_only_nautilus_image.py` |
+
+Workflow:
+
+1. Run precursor (`deriv-approx` with `informed: True`, or `fisher`)
+2. Read `ctx["likelihood"]["keys_to_include"]`, `u0`, `ctx["fisher"]["H0"]`
+3. `sigmas = sqrt(diag(inv(-H0)))`
+4. For each key: `ctx["cfg"]["priors"][key] = dist.Uniform(mu - span*sig, mu + span*sig)` (skip invalid σ)
+5. Set `cfg["nautilus"]["resume"] = False` (or delete checkpoint) when priors change
+6. Run `nautilus-source` or `nautilus-image`
 
 ```python
-import numpy as np
-import numpyro.distributions as dist
+NAUTILUS_SIGMA_SPAN = 2.0  # 5.0 for em_nautilus.py
 
+print("\n--- Nautilus priors from Fisher H0 (deriv-approx) ---\n")
 keys = ctx["likelihood"]["keys_to_include"]
 u0 = np.asarray(ctx["likelihood"]["u0"])
 H0 = np.asarray(ctx["fisher"]["H0"])
+FM = -H0
 try:
-    cov = np.linalg.inv(-H0)
+    cov = np.linalg.inv(FM)
 except np.linalg.LinAlgError:
-    cov = np.linalg.pinv(-H0)
+    cov = np.linalg.pinv(FM)
 sigmas = np.sqrt(np.diag(cov))
-span = 5.0
+
 for i, key in enumerate(keys):
     sig = float(sigmas[i])
     if not np.isfinite(sig) or sig <= 0:
+        print(f"  Nautilus prior {key}: skip (sigma={sig}) — keep existing prior")
         continue
     mu = float(u0[i])
-    ctx["cfg"]["priors"][key] = dist.Uniform(mu - span * sig, mu + span * sig)
+    lo = mu - NAUTILUS_SIGMA_SPAN * sig
+    hi = mu + NAUTILUS_SIGMA_SPAN * sig
+    ctx["cfg"]["priors"][key] = dist.Uniform(lo, hi)
+    print(f"  Nautilus prior {key}: Uniform({lo:.4g}, {hi:.4g})  [mu={mu:.4g}, sigma={sig:.4g}]")
 ```
 
+**Source-plane caveat (`nautilus-source` only):** H₀ from image-plane deriv-approx covers `lens0_*`, `T_star`, `dL`, `image_x*`/`image_y*` — **not** `y0gw`/`y1gw`. Image keys updated in `ctx` are ignored by nautilus-source. Keep manual `y0gw`/`y1gw` boxes via `ctx["cfg"]["priors"]` and/or `cfg["gw"]["source_plane_bounds"]`. For `nautilus-image`, all H₀ keys apply directly.
+
 3. **Checkpoint** — `cfg["nautilus"] = {"filepath": "...", "resume": False}` when priors change
-4. **GW-only** — ask: Fisher H₀ spans vs tight truth boxes (`gw_only_nautilus.py`)
+4. **GW-only prior choice** — default: Fisher H₀ with `NAUTILUS_SIGMA_SPAN = 2.0` after deriv-approx. Alternative: manual tight truth boxes (`SOURCE_HALF_*`, `IMAGE_BOX_HALF`) when no precursor or for `y0gw`/`y1gw` on source-plane runs
 
 ## Execution
 

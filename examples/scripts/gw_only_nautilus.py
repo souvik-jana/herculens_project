@@ -7,6 +7,8 @@ create_default_param_groups + plot_multi_comparison_corner.
 
 import os
 
+from numpy._core.numeric import False_
+
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OUTPUT_DIR = os.path.join(REPO_ROOT, "examples/outputs/outputs_gw_only_nautilus")
 
@@ -14,6 +16,7 @@ OUTPUT_DIR = os.path.join(REPO_ROOT, "examples/outputs/outputs_gw_only_nautilus"
 # Set False (or delete the hdf5) when free parameters / priors change.
 NAUTILUS_CHECKPOINT = os.path.join(OUTPUT_DIR, "nautilus_checkpoint.hdf5")
 NAUTILUS_RESUME = False
+NAUTILUS_SIGMA_SPAN = 5.0
 
 IMAGE_PLANE_CORNER_PATH  = "image_plane_corner_{group_name}.png"
 SOURCE_PLANE_CORNER_PATH = "source_plane_corner_{group_name}.png"
@@ -33,9 +36,9 @@ GW_SOURCE_POS = (0.05, 1e-6)
 
 # Tight boxes around truth for free image positions (deriv/fisher), source plane (nautilus),
 # and cosmology (all methods).
-SOURCE_HALF_Y0 = 0.02
-SOURCE_HALF_Y1 = 0.004
-IMAGE_BOX_HALF = 0.05
+SOURCE_HALF_Y0 = 0.04
+SOURCE_HALF_Y1 = 0.02
+IMAGE_BOX_HALF = 1.2
 T_STAR_HALF_FRAC = 0.40
 DL_HALF_FRAC = 0.22
 
@@ -78,7 +81,7 @@ BASE_CFG = {
     "n_live": 2000,
     "n_eff": 5000,
     "n_like_max": 500000,
-    "solver_backend": "jaxtronomy",
+    "solver_backend": "helens", #"jaxtronomy",
     "verbose": True,
     "filepath": NAUTILUS_CHECKPOINT,
     "resume": NAUTILUS_RESUME,
@@ -146,12 +149,12 @@ ctx["cfg"]["priors"] = {
     "lens1_gamma2":   float(tp["lens1_gamma2"]),
     "lens1_ra_0":     float(tp["lens1_ra_0"]),
     "lens1_dec_0":    float(tp["lens1_dec_0"]),
-    "T_star":         float(tp["T_star"]),#dist.Uniform(t_star_true * (1 - T_STAR_HALF_FRAC), t_star_true * (1 + T_STAR_HALF_FRAC)),
-    "dL":             float(tp["dL"]),#dist.Uniform(dL_true * (1 - DL_HALF_FRAC), dL_true * (1 + DL_HALF_FRAC)),
+    # "T_star":         dist.Uniform(t_star_true * (1 - T_STAR_HALF_FRAC), t_star_true * (1 + T_STAR_HALF_FRAC)),#float(tp["T_star"]),
+    # "dL":             dist.Uniform(dL_true * (1 - DL_HALF_FRAC), dL_true * (1 + DL_HALF_FRAC)),#float(tp["dL"]),
     "y0gw":           dist.Uniform(GW_SOURCE_POS[0] - SOURCE_HALF_Y0, GW_SOURCE_POS[0] + SOURCE_HALF_Y0),
     "y1gw":           dist.Uniform(GW_SOURCE_POS[1] - SOURCE_HALF_Y1, GW_SOURCE_POS[1] + SOURCE_HALF_Y1),
     "lens0_gamma":    float(tp["lens0_gamma"]),#dist.Uniform(1.7, 2.9),
-    "lens0_e2":       dist.Uniform(0.05, 0.18),#float(tp["lens0_e2"]),#
+    "lens0_e2":       dist.Uniform(0.01, 0.6),#float(tp["lens0_e2"]),#
 }
 
 # ctx["cfg"]["gw"]["source_plane_bounds"]["T_star"] = (
@@ -239,6 +242,29 @@ plot_source_posterior(
     },
 )
 sp_deriv = source_out_deriv["source_plane_samples_plot"]
+
+## Activate this if tightening the priors on the free parameters (deriv-approx)
+# print("\n--- Nautilus-source priors from Fisher H0 (deriv-approx) ---\n")
+# keys = ctx["likelihood"]["keys_to_include"]
+# u0 = np.asarray(ctx["likelihood"]["u0"])
+# H0 = np.asarray(ctx["fisher"]["H0"])
+# FM = -H0
+# try:
+#     cov = np.linalg.inv(FM)
+# except np.linalg.LinAlgError:
+#     cov = np.linalg.pinv(FM)
+# sigmas = np.sqrt(np.diag(cov))
+
+# for i, key in enumerate(keys):
+#     sig = float(sigmas[i])
+#     if not np.isfinite(sig) or sig <= 0:
+#         print(f"  Nautilus prior {key}: skip (sigma={sig}) — keep existing prior")
+#         continue
+#     mu = float(u0[i])
+#     lo = mu - NAUTILUS_SIGMA_SPAN * sig
+#     hi = mu + NAUTILUS_SIGMA_SPAN * sig
+#     ctx["cfg"]["priors"][key] = dist.Uniform(lo, hi)
+#     print(f"  Nautilus prior {key}: Uniform({lo:.4g}, {hi:.4g})  [mu={mu:.4g}, sigma={sig:.4g}]")
 
 # # 2D log-density grid via ctx["likelihood"] (ProbModel, same as deriv-approx)
 # print("\n--- 2D log-density grid (lens0_gamma, lens0_e2) ---\n")

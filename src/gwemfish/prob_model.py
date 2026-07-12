@@ -459,6 +459,143 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
 
 
 # ---------------------------------------------------------------------------
+# ProbModelSourcePlane_GW_only  (GW only, source-plane positions)
+# ---------------------------------------------------------------------------
+
+class ProbModelSourcePlane_GW_only(hcl.NumpyroModel):
+    """GW-only probabilistic model, source-plane parametrisation.
+
+    Samples y0gw/y1gw directly (instead of image positions), solves the lens
+    equation *inside* the model via `solver.solve(...)`, then computes the GW
+    likelihood from the solved images -- mirrors ProbModel_GW_only's structure,
+    but source-plane instead of image-plane. Pass a DifferentiableLensEquationSolver
+    (differentiable_solver.py) as `solver` for gradient-based inference
+    (deriv-approx-source / Fisher); the raw helens solver gives exact-zero
+    gradients and must not be used here for that purpose. nautilus-source (no
+    gradients needed) is unaffected -- it already uses the raw solver via
+    nautilus_source_inference.py.
+
+    Note: unlike ProbModel_GW_only (image-plane), this model adds no
+    betx_x_diff/bety_y_diff/log_jacobian terms. Those exist on the image-plane
+    side to (a) softly penalize inconsistent sampled images and (b) correct a
+    flat image-plane prior to a flat source-plane prior. Neither is needed
+    here: the solver enforces beta self-consistency exactly by construction,
+    and the y0gw/y1gw prior is already flat in the source plane directly.
+    This also keeps this model's likelihood directly comparable to
+    nautilus-source's _gw_loglike_from_images (same forward model, same terms).
+    """
+
+    def __init__(self, n_images=4, gw_observations=None, lens_gw=None,
+                 solver=None, solver_params=None, priors=None,
+                 gw_error_scales=None, use_mst: bool = False):
+        """
+        Args:
+            n_images:        Number of lensed images (excluding central image).
+            gw_observations: Dict with 'time_delays' and 'dL_eff'.
+            lens_gw:         LensImageGW instance.
+            solver:          DifferentiableLensEquationSolver instance (required
+                             for correct gradients; see class docstring).
+            solver_params:   Dict of solver parameters. Defaults to SOLVER_PARAMS.
+            priors:          Optional override dict. Also accepts 'y0gw'/'y1gw'
+                             lambdas overriding the default Uniform(-1, 1) box.
+            gw_error_scales: Optional dict scaling GW likelihood uncertainties.
+                             Keys: 'sigma_td', 'sigma_dL_eff'.
+            use_mst:         If True, include mass-sheet `k_mst` in GW forward model.
+        """
+        self.n_images        = n_images
+        self.gw_observations = gw_observations or {}
+        self.lens_gw         = lens_gw
+        self.use_mst         = bool(use_mst)
+        self.solver          = solver
+        self.solver_params   = solver_params if solver_params is not None else SOLVER_PARAMS.copy()
+
+        _source_plane_defaults = {
+            'y0gw': lambda: numpyro.sample('y0gw', dist.Uniform(-1.0, 1.0)),
+            'y1gw': lambda: numpyro.sample('y1gw', dist.Uniform(-1.0, 1.0)),
+        }
+        base = {**DEFAULT_PRIORS_GW_ONLY, **_source_plane_defaults}
+        self.priors = {**base, **(priors or {})}
+        self.gw_error_scales = {
+            "sigma_td": 0.05,
+            "sigma_dL_eff": 0.02,
+            **(gw_error_scales or {}),
+        }
+        super().__init__()
+
+    def model(self):
+        p = self.priors
+
+        T_star = p['T_star']()
+        dL     = p['dL']()
+
+        lens_center_x = p['lens_center_x']()
+        lens_center_y = p['lens_center_y']()
+        prior_lens = _build_prior_lens(
+            lens_theta_E  = p['lens_theta_E'](),
+            lens_e1       = p['lens_e1'](),
+            lens_e2       = p['lens_e2'](),
+            lens_gamma    = p['lens_gamma'](),
+            lens_center_x = lens_center_x,
+            lens_center_y = lens_center_y,
+            gamma1        = p['lens_gamma1'](),
+            gamma2        = p['lens_gamma2'](),
+        )
+
+        y0gw  = p['y0gw']()
+        y1gw  = p['y1gw']()
+        betas = jnp.array([y0gw, y1gw])
+
+        result_thetas, result_betas = self.solver.solve(betas, prior_lens, **self.solver_params)
+        (result_theta_x_no_central, result_theta_y_no_central,
+         _, _) = remove_central_image(result_thetas, result_betas,
+                                      lens_center_x, lens_center_y)
+
+        x_pos_array = jnp.array(result_theta_x_no_central)
+        y_pos_array = jnp.array(result_theta_y_no_central)
+
+        k_mst_kw = p["k_mst"]() if self.use_mst else None
+        (_, model_time_delays, _, model_dL_eff,
+         _, _, _, _) = compute_gw_from_images(
+            x_pos_array, y_pos_array, prior_lens, self.lens_gw, T_star, dL, k_mst=k_mst_kw)
+
+        gw_obs       = self.gw_observations
+        sigma_td     = jnp.maximum(
+            self.gw_error_scales.get("sigma_td_floor", 1.0),
+            self.gw_error_scales["sigma_td"] * gw_obs['time_delays'],
+        )
+        sigma_dL_eff = self.gw_error_scales["sigma_dL_eff"] * gw_obs['dL_eff']
+
+        numpyro.sample('tdelays_obs',
+                       dist.Independent(dist.Normal(model_time_delays, sigma_td), 1),
+                       obs=gw_obs['time_delays'])
+        numpyro.sample('dL_eff_obs',
+                       dist.Independent(dist.Normal(model_dL_eff, sigma_dL_eff), 1),
+                       obs=gw_obs['dL_eff'])
+
+    def params2kwargs(self, params):
+        return {
+            'kwargs_lens': [
+                {
+                    'theta_E':  params['lens_theta_E'],
+                    'e1':       params['lens_e1'],
+                    'e2':       params['lens_e2'],
+                    'gamma':    params['lens_gamma'],
+                    'center_x': params.get('lens_center_x', 0.0),
+                    'center_y': params.get('lens_center_y', 0.0),
+                },
+                {
+                    'gamma1': params['lens_gamma1'],
+                    'gamma2': params['lens_gamma2'],
+                    'ra_0':   0.0,
+                    'dec_0':  0.0,
+                }
+            ],
+            'y0gw': params.get('y0gw', 0.0),
+            'y1gw': params.get('y1gw', 0.0),
+        }
+
+
+# ---------------------------------------------------------------------------
 # ProbModelFisher  (EM + GW, Fisher / banana approximate likelihood)
 # ---------------------------------------------------------------------------
 
