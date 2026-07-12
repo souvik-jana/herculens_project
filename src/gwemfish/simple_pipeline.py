@@ -1259,7 +1259,69 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
         pixel_grid = setup_pixel_grid(**pg_kwargs)
     solver, _, solver_params = setup_differentiable_helens_solver(pixel_grid, ctx["lens_gw"])
 
-    if mode == "GW-only":
+    use_layout = bool(cfg_full.get("use_parameter_layout", False))
+    entries = None
+    registry = None
+    priors_flex = None
+
+    if use_layout:
+        from .flex_prob_model import FlexProbModelSourcePlaneEMGW, FlexProbModelSourcePlaneGWOnly
+        from .parameter_layout import (
+            build_mass_parameter_entries,
+            build_parameter_layout,
+            build_priors_registry,
+        )
+
+        if mode == "GW-only":
+            entries = build_mass_parameter_entries(
+                ctx["lens_mass_model"], kwargs_lens=ctx["kwargs_lens"]
+            )
+            registry = build_priors_registry(
+                entries, mass_model=ctx["lens_mass_model"], user_priors=priors_user_norm,
+            )
+            priors_flex = {**registry, **priors_combined}
+            probmodel = FlexProbModelSourcePlaneGWOnly(
+                entries,
+                priors_flex,
+                n_images=n_images,
+                gw_observations=ctx["gw_obs"],
+                lens_gw=ctx["lens_gw"],
+                solver=solver,
+                solver_params=solver_params,
+                gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+                use_mst=use_mst,
+            )
+        else:  # mode == "EM+GW"
+            from .config import DEFAULT_KWARGS_LENS_LIGHT, DEFAULT_KWARGS_SOURCE
+
+            em_local = cfg_full.get("em") or {}
+            kwargs_source = em_local.get("kwargs_source") or DEFAULT_KWARGS_SOURCE
+            kwargs_lens_light = em_local.get("kwargs_lens_light") or DEFAULT_KWARGS_LENS_LIGHT
+            entries, _ = build_parameter_layout(
+                ctx["lens_image"],
+                kwargs_lens=ctx["kwargs_lens"],
+                kwargs_source=kwargs_source,
+                kwargs_lens_light=kwargs_lens_light,
+            )
+            registry = build_priors_registry(
+                entries, lens_image=ctx["lens_image"], user_priors=priors_user_norm,
+            )
+            priors_flex = {**registry, **priors_combined}
+            probmodel = FlexProbModelSourcePlaneEMGW(
+                entries,
+                priors_flex,
+                n_images=n_images,
+                gw_observations=ctx["gw_obs"],
+                em_observations=ctx["em_obs"],
+                lens_image=ctx["lens_image"],
+                lens_gw=ctx["lens_gw"],
+                noise=ctx["noise_inf"],
+                solver=solver,
+                solver_params=solver_params,
+                gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+                use_mst=use_mst,
+            )
+    elif mode == "GW-only":
         probmodel = ProbModelSourcePlane_GW_only(
             n_images=n_images,
             gw_observations=ctx["gw_obs"],
@@ -1290,11 +1352,11 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
         "n_images": n_images,
         "truth_params": truth_params,
         "half_width": src_half_width,
-        "use_layout": False,
-        "entries": None,
-        "registry": None,
+        "use_layout": use_layout,
+        "entries": entries,
+        "registry": registry,
         "likelihood_seed": int(cfg_full["inference"]["rng_key"]),
-        "priors_flex": None,
+        "priors_flex": priors_flex,
         "priors_combined": priors_combined,
         "image_position_priors_override": None,
     }

@@ -1,0 +1,515 @@
+"""
+Canonical, complete reference for GWEMFISH's `run_inference` pipeline `cfg` dict.
+
+`gwemfish.simple_pipeline.make_default_cfg()` returns the *defaults*, but several
+keys that matter in practice are either absent from that dict (they are read
+directly off `cfg` with `.get(..., default)` at call sites, e.g. `cfg["nautilus"]`,
+`cfg["gw"]["source_box_half_width"]`, `cfg["output"]["json_tag"]`) or present but
+easy to miss because they only apply to specific `mode`/`method` combinations.
+This module is a single place to look up every such key instead of grepping
+through a dozen `examples/scripts/*.py` files for "the priors pattern that looks
+close enough".
+
+This file supersedes the old practice (see the `gwemfish-infer` Cursor skill,
+which used to say "copy priors patterns from the closest examples/scripts/
+file") of copy-pasting a whole example script and hoping its cfg block covers
+what you need.
+
+Usage:
+
+    from cfg import COMPLETE_CFG
+    from gwemfish.simple_pipeline import deep_merge_cfg
+
+    my_cfg = deep_merge_cfg(COMPLETE_CFG, {"inference": {"num_warmup": 2000}})
+
+Or, more commonly, just copy the relevant block(s) below (e.g. the "nautilus"
+block, or one side of PRIORS_EXAMPLES) straight into your own script's cfg
+dict and delete everything else -- COMPLETE_CFG is not meant to be passed to
+`run_inference` wholesale (some sibling keys are mutually exclusive, e.g.
+`gw.use_mst`/`gw.k_mst` vs the preferred top-level `mst` block; `nautilus` is
+read only when method is 'nautilus-source'/'nautilus-image').
+
+Every key below is annotated with:
+  - what it does
+  - which mode(s) ('EM-only' / 'GW-only' / 'EM+GW') and method(s)
+    ('fisher', 'deriv-approx', 'hmc', 'hmc-informed', 'deriv-approx-source',
+    'hmc-source', 'hmc-informed-source', 'nautilus-source', 'nautilus-image')
+    it applies to -- "all" means all three modes / all nine methods
+  - value type
+  - default (from `make_default_cfg()` where one exists; otherwise "no
+    default -- read via cfg.get(...)" is noted explicitly)
+
+Source of truth for all of this: `src/gwemfish/simple_pipeline.py`
+(`make_default_cfg`, `run_inference`, `_build_inference_probmodel`,
+`_build_inference_probmodel_source_plane`), `src/gwemfish/nautilus_common.py`,
+`src/gwemfish/nautilus_source_inference.py`, `src/gwemfish/nautilus_image_inference.py`,
+`src/gwemfish/parameter_layout.py`, `src/gwemfish/config.py`, `src/gwemfish/priors.py`.
+"""
+
+import numpy as np
+import numpyro
+import numpyro.distributions as dist
+
+
+# ---------------------------------------------------------------------------
+# Method / mode cheat sheet (see run_inference docstring for the authoritative
+# version -- this is just so the comments below make sense without flipping
+# back and forth to simple_pipeline.py):
+#
+#   mode:   'EM+GW' | 'GW-only' | 'EM-only'
+#   method: 'fisher'                 -- Gaussian N(u0, (-H0)^-1) from Fisher Hessian, all modes
+#           'deriv-approx'           -- NUTS on the Taylor/banana model (image-plane GW), all modes
+#           'hmc'                    -- Plain NUTS on the full likelihood (image-plane GW), all modes
+#           'hmc-informed'           -- Always-informed NUTS on the full likelihood, all modes
+#           'deriv-approx-source'    -- Like deriv-approx but samples y0gw/y1gw directly and
+#                                       solves the lens equation inside the model (differentiable
+#                                       solver). NOT valid for mode='EM-only'.
+#           'hmc-source'             -- Source-plane counterpart of 'hmc'. NOT valid for 'EM-only'.
+#           'hmc-informed-source'    -- Source-plane counterpart of 'hmc-informed'. NOT valid for 'EM-only'.
+#           'nautilus-source'        -- Nested sampling, source-plane GW (y0gw/y1gw). All modes
+#                                       (EM-only nautilus uses the same pixel likelihood as
+#                                       nautilus-image and REQUIRES use_parameter_layout=True).
+#           'nautilus-image'         -- Nested sampling, image-plane GW (image_x*/image_y*). All modes.
+#
+# The '-source' family (deriv-approx-source/hmc-source/hmc-informed-source) and 'nautilus-source'
+# are conceptually related (both sample y0gw/y1gw) but dispatch through completely different code
+# paths: the '-source' family goes through _build_inference_probmodel_source_plane (differentiable
+# helens solver, full NUTS/Taylor machinery); nautilus-source goes through nautilus_source_inference
+# (scipy-prior nested sampling, no gradients, its own helens/jaxtronomy solver backend choice).
+# ---------------------------------------------------------------------------
+
+
+COMPLETE_CFG = {
+
+    # ---- cfg["jax"]: JAX runtime setup, consumed by gwemfish.setup_jax(**cfg["jax"]) -----------
+    # NOTE: simple_pipeline itself does not call setup_jax -- call it yourself at script start,
+    # before importing jax-heavy gwemfish submodules.
+    "jax": {
+        "ncpus": None,        # int or None. None => use all available cores. All modes/methods.
+        "enable_x64": True,   # bool. GWEMFISH assumes float64 everywhere; do not set False.
+        "platform": "cpu",    # "cpu" | "gpu" | "tpu".
+        "verbose": True,      # bool. Print device count / platform on setup.
+    },
+
+    # ---- cfg["em"]: EM (imaging) simulation + inference settings --------------------------------
+    # Read by setup_em_observation always; read by run_inference for mode in
+    # ('EM-only', 'EM+GW') (all methods) to rebuild kwargs_source/kwargs_lens_light templates
+    # when use_parameter_layout=True.
+    "em": {
+        "enabled": True,  # bool. False => setup_em_observation returns {} (skip EM entirely,
+                           # e.g. for a pure GW-only run). Mirror with mode='GW-only'.
+        "pixel_grid_kwargs": {"npix": 20, "pix_scl": 0.4},   # dict -> setup_pixel_grid(**...)
+        "psf_kwargs": {"psf_type": "GAUSSIAN", "fwhm": 0.2, "pixel_size": 0.4},  # -> setup_psf(**...)
+        "noise_simu_kwargs": {"npix": 20, "background_rms": 1e-2, "exposure_time": 1e3},
+        # Inference-time noise: background_rms=None means it gets SAMPLED (noise_sigma_bkg prior)
+        # rather than held fixed -- set a float here (or via cfg["priors"]["noise_sigma_bkg"]) to
+        # fix it instead.
+        "noise_inf_kwargs": {"npix": 20, "background_rms": None, "exposure_time": 1e3},
+        "kwargs_numerics": {"supersampling_factor": 1},  # dict -> herculens numerics kwargs
+        "exposure_time": 1e3,  # float, seconds. Passed to simulate_em separately from noise kwargs.
+        # (x, y) arcsec: EM source-light center used to derive EM image positions via the lens
+        # equation (truth_params['x_image_true_em'] / ['y_image_true_em']). In practice
+        # em["kwargs_source"][0]["center_x"/"center_y"] wins if set (see setup_em_observation);
+        # this tuple is just the fallback when kwargs_source doesn't set center_x/y explicitly.
+        "source_pos": (0.05, 0.1),
+        # List[dict], one dict per Sersic-like source-light component (herculens LightModel).
+        # Legacy flat truth keys: source_amp/source_R_sersic/source_n/source_e1/source_e2/
+        # source_center_x/source_center_y (from kwargs_source[0] only). With
+        # use_parameter_layout=True, ALL source components get source{j}_{param} flat names
+        # instead (see parameter_layout.build_parameter_layout).
+        "kwargs_source": [
+            {
+                "amp": 4.0, "R_sersic": 0.5, "n_sersic": 2.0,
+                "e1": 0.05, "e2": 0.05, "center_x": 0.05, "center_y": 0.1,
+            },
+        ],
+        # List[dict], one dict per lens-light (foreground galaxy light) component. Legacy flat
+        # truth keys: light_amp/light_R_sersic/.../light_center_x/light_center_y (light[0] only).
+        # With use_parameter_layout=True: light{k}_{param} for every component.
+        "kwargs_lens_light": [
+            {
+                "amp": 8.0, "R_sersic": 1.0, "n_sersic": 3.0,
+                "e1": -0.0556, "e2": 0.0962, "center_x": 0.0, "center_y": 0.0,
+            },
+        ],
+        # Zero-arg callables returning herculens model instances, e.g.
+        # (lambda: hcl.LightModel([hcl.Sersic()])). Restored after a JSON round-trip via
+        # simple_pipeline.restore_em_model_factories (to_serializable stores them as repr strings).
+        "source_model_class": None,       # None here => must come from make_default_cfg's default
+        "lens_light_model_class": None,   # (DEFAULT_SOURCE_LIGHT_MODEL / DEFAULT_LENS_LIGHT_MODEL).
+        "seed": 87651,  # int. RNG seed for simulate_em's noise realization.
+    },
+
+    # ---- cfg["gw"]: GW (time-delay / effective-luminosity-distance) simulation + inference -------
+    "gw": {
+        "enabled": True,  # bool. False => setup_gw_observation is a no-op (returns ctx unchanged).
+        "n_images": 4,    # int. Nominal image count -- actual count used by run_inference is
+                          # resolved from ctx (len(ctx['x_img_gw']) etc.) via _resolve_gw_n_images;
+                          # a mismatch just emits a UserWarning and uses the ctx-derived value.
+        "source_pos": (0.05, 1e-6),  # (y0, y1) arcsec: TRUE GW source-plane position. Drives
+                                      # image solving / time delays; also becomes truth y0gw/y1gw
+                                      # for the '-source' methods (see below).
+        "cosmology": {"H0": 67.3, "Om0": 0.316},  # dict -> JAXCosmology(**cosmology). Flat LCDM only.
+        # Merges IMAGE_POSITION_SOLVER_DEFAULTS (jaxtronomy image-position solver: 'solver',
+        # 'min_distance', 'search_window', 'precision_limit', 'num_iter_max',
+        # 'arrival_time_sort') with SOLVER_PARAMS (Helens differentiable solver: 'nsolutions',
+        # 'niter', 'scale_factor', 'nsubdivisions'). Both solvers are used somewhere in the
+        # pipeline (image positions at setup time vs. the differentiable solver for '-source'
+        # methods), so both key sets can coexist here; each solver ignores keys it doesn't use.
+        "solver_params": {
+            "solver": "lenstronomy", "min_distance": 0.01, "search_window": 15,
+            "precision_limit": 1e-10, "num_iter_max": 1200, "arrival_time_sort": True,
+            "nsolutions": 5, "niter": 8, "scale_factor": 2, "nsubdivisions": 5,
+        },
+        # GW likelihood scale factors (ProbModel* / FlexProbModel*, image-plane methods: fisher,
+        # deriv-approx, hmc, hmc-informed, nautilus-image; source-plane methods read the same dict
+        # via nautilus_source_inference / _build_inference_probmodel_source_plane too).
+        "error_scales": {
+            "sigma_td": 0.05,      # float. sigma_time_delay = sigma_td * observed time delays.
+            "sigma_dL_eff": 0.2,   # float. sigma_dL_eff = sigma_dL_eff * observed dL_eff.
+            # float, seconds. Floor under sigma_td*|obs_td| so tiny/zero time delays don't
+            # collapse the likelihood width to ~0. Not in make_default_cfg()'s dict -- read via
+            # error_scales.get("sigma_td_floor", 1.0) in prob_model.py/flex_prob_model.py/
+            # nautilus_source_inference.py. Add explicitly if the default floor is wrong for
+            # your system (e.g. very short time delays).
+            "sigma_td_floor": 1.0,
+            # float. Soft Normal(0, epsilon) width on the "images must ray-shoot to the same
+            # source point" constraint (betx_x_diff/bety_y_diff) in image-plane ProbModel* only.
+            # NOT present in any source-plane method (they solve the lens equation directly, no
+            # such soft constraint needed). THIS IS THE KEY CAVEAT when comparing an image-plane
+            # method's to_source_plane_samples() output against a native source-plane method
+            # (nautilus-source / deriv-approx-source / hmc-source / hmc-informed-source): with the
+            # default 0.005, image-plane posteriors can look 2-3x wider in the source plane purely
+            # from this term, not from the GW likelihood itself. Tighten to ~1e-4 before such a
+            # comparison (see gwemfish-infer skill "Question 3.5" for the full workflow / NUTS
+            # divergence tradeoffs of tightening this).
+            "epsilon": 0.005,
+        },
+        # float, arcsec. Half-width of the truth-centered uniform box for EACH image_x{i}/image_y{i}
+        # prior. mode='GW-only' only (EM+GW gets its image-position prior from
+        # image_position_priors_override built the same way, but the box is also driven by this
+        # same key in _build_inference_probmodel). Applies to fisher/deriv-approx/hmc/hmc-informed/
+        # nautilus-image (image-plane methods only -- irrelevant to the '-source' family/
+        # nautilus-source, which use source_box_half_width / source_plane_bounds instead).
+        "image_box_half_width": 0.6,
+        # float, arcsec. Half-width of the truth-centered uniform box on y0gw/y1gw directly.
+        # NOT present in make_default_cfg()'s returned dict -- read via
+        # cfg["gw"].get("source_box_half_width", 0.05) inside
+        # _build_inference_probmodel_source_plane. Applies ONLY to the '-source' family
+        # (deriv-approx-source / hmc-source / hmc-informed-source); irrelevant to nautilus-source,
+        # which uses source_plane_bounds below instead (different code path, different convention:
+        # this one is a half-width around truth, that one is explicit (low, high) bounds).
+        "source_box_half_width": 0.05,
+        # dict[str, (low, high)] in DEFAULT_PRIORS_GW_SOURCE_PLANE's key space (lens_theta_E,
+        # lens_e1, ..., T_star, dL, y0gw, y1gw). NOT present in make_default_cfg()'s returned dict.
+        # Read only by nautilus_source_inference.build_gw_source_plane_problem /
+        # build_em_gw_source_plane_problem: merged OVER DEFAULT_PRIORS_GW_SOURCE_PLANE (your entry
+        # replaces that key's default (low, high) hard bounds -- used both to build the nautilus
+        # scipy Prior's support AND (for non-fixed keys) the shape of default_dists via
+        # layout_defaults_from_registry). Applies ONLY to method='nautilus-source'. Use this (not
+        # cfg['priors']) to move the y0gw/y1gw box for nautilus-source; cfg['priors'] entries here
+        # would need to be full scipy-compatible distributions instead (see parse_cfg_priors).
+        "source_plane_bounds": {
+            "y0gw": (0.05 - 0.02, 0.05 + 0.02),
+            "y1gw": (1e-6 - 0.004, 1e-6 + 0.004),
+        },
+        # Legacy Mass Sheet Transform location -- prefer the top-level "mst" block below.
+        # Still honored as a fallback by _resolve_mst_settings (top-level "mst" wins if enabled).
+        "use_mst": False,  # bool.
+        "k_mst": 0.0,      # float.
+    },
+
+    # ---- cfg["mst"]: preferred Mass Sheet Transform controls (all modes, all methods) ------------
+    # If mst.enabled=True, run_inference adds a default Uniform(-0.99999, 0.99999) prior on
+    # 'k_mst' unless cfg['priors']['k_mst'] is set. GW forward model uses LensImageGW.compute_mst
+    # (JAX-traceable) so k_mst can be sampled or differentiated through.
+    "mst": {
+        "enabled": False,  # bool.
+        "k_mst": 0.0,      # float. Truth / fixed value when not sampling k_mst via priors.
+    },
+
+    # ---- cfg["lens"]: lens mass model + geometry (all modes, all methods) -----------------------
+    "lens": {
+        "lens_model_list": ["EPL", "SHEAR"],  # List[str]. Herculens/jaxtronomy profile names,
+                                               # e.g. ["EPL", "SHEAR"], ["SIS"], ["NFW", "SHEAR"].
+                                               # Determines parameter_layout's lens0_*/lens1_*/...
+                                               # blocks 1:1 with use_parameter_layout=True.
+        # List[dict], same length as lens_model_list. Sparse entries are OK: missing keys are
+        # filled from config._DEFAULT_KWARGS_BY_LENS_MODEL per profile name (e.g. EPL defaults
+        # e1=e2=0, gamma=2.0, center_x=center_y=0.0) so the solver/herculens always sees complete
+        # kwargs. This becomes the truth (ctx['kwargs_lens']) used to build legacy lens_* / lens0_*
+        # truth_params.
+        "kwargs_lens": [
+            {"theta_E": 1.2, "e1": 0.0, "e2": 0.1, "gamma": 2.0, "center_x": 0.0, "center_y": 0.0},
+            {"gamma1": 0.1, "gamma2": 0.0, "ra_0": 0.0, "dec_0": 0.0},
+        ],
+        "zl": 0.5,  # float. Lens redshift.
+        "zs": 2.0,  # float. Source redshift.
+    },
+
+    # ---- cfg["priors"]: user prior overrides (all modes, all methods) -----------------------------
+    # Keyed by flat parameter name (legacy 'lens_theta_E' or layout 'lens0_theta_E' etc. --
+    # whichever naming convention use_parameter_layout selects). Each value can be:
+    #   - a numpyro Distribution instance, e.g. dist.Uniform(0.5, 2.0)  -> sampled with that prior
+    #   - a zero-arg callable, e.g. (lambda: numpyro.sample("lens_e1", dist.Normal(0, 0.1)))
+    #     -> used as-is (advanced: custom/derived sample sites)
+    #   - a fixed scalar/array, e.g. 1.2  -> held FIXED (wrapped as a constant; the key is
+    #     REMOVED from Fisher/MCMC's keys_to_include so no gradient is taken w.r.t. it)
+    # Omitting a key entirely means: model default prior (image position uniform box for
+    # image_x*/image_y*, y0gw/y1gw truth-centered box for -source methods, profile default sampler
+    # from profile_prior_rules for use_parameter_layout=True keys, or a ValueError at Fisher
+    # expansion-point-building time if the model has no default and truth_params doesn't have it
+    # either).
+    "priors": {},
+
+    # ---- cfg["inference"]: NUTS / Fisher / informed-NUTS controls ---------------------------------
+    "inference": {
+        "num_warmup": 6000,    # int. NUTS warmup steps. methods: deriv-approx(-source), hmc(-source),
+                               # hmc-informed(-source).
+        "num_samples": 12000,  # int. NUTS post-warmup samples (same methods as above).
+        "num_chains": 2,       # int. NUTS chains (same methods as above).
+        "max_tree_depth": 10,  # int. NUTS tree depth cap (same methods as above).
+        "dense_mass": True,    # bool. Dense mass matrix for PLAIN (non-informed) NUTS only, i.e.
+                               # method in ('deriv-approx', 'deriv-approx-source', 'hmc',
+                               # 'hmc-source') with informed=False/None. Ignored for informed NUTS
+                               # (which uses the Fisher-derived mass matrix instead) and for
+                               # 'fisher'/'nautilus-*'.
+        # Hessian-informed NUTS-only knobs (hmc-informed(-source), or hmc(-source)/
+        # deriv-approx(-source) with informed=True):
+        "hmc_informed_scale": 1.0,          # float. Scales the informed mass matrix / step size.
+        "hmc_informed_perturb_scale": 0.1,  # float. Perturbation scale for informed-NUTS init.
+        # bool or None. Turns on informed NUTS for 'hmc'/'hmc-source'/'deriv-approx'/
+        # 'deriv-approx-source'. IGNORED for 'hmc-informed'/'hmc-informed-source' (those are ALWAYS
+        # informed; passing informed=False for them raises ValueError). N/A for 'fisher',
+        # 'nautilus-source', 'nautilus-image'.
+        "informed": None,
+        # (n, n) array or None. Overrides the Fisher Hessian H0 used to build the informed-NUTS
+        # mass matrix / the Gaussian covariance for 'fisher' / the Taylor expansion for
+        # 'deriv-approx(-source)'. None => use the H0 that compute_fisher() computes at the
+        # expansion point (truth_params merged with any fixed cfg['priors'] literals). Same H0
+        # feeds ALL of: fisher, deriv-approx(-source), hmc-informed(-source) -- it is always
+        # computed once per run_inference call regardless of method.
+        "H0": None,
+        "n_fisher_samples": 5000,  # int. method='fisher' only: number of Gaussian draws N(u0, cov).
+        "fisher_order": 2,         # int. compute_fisher's Taylor order (2 = Hessian/quadratic).
+        "rng_key": 123,            # int. Seeds setup/likelihood/Fisher/MCMC PRNGKeys (same value
+                                   # reused for all of them inside run_inference).
+        "prior_sample_rng_key": 123,  # int. Seeds the one-shot probmodel.get_sample() call used to
+                                      # discover keys_to_include (the free-parameter name list).
+        # bool. method='hmc-informed'/'hmc-informed-source' only (passed to run_mcmc_informed).
+        # NOT present in make_default_cfg()'s returned dict -- read via
+        # cfg["inference"].get("regularize", False). If True, eigendecomposes the Fisher mass
+        # matrix and clips/regularizes small or negative eigenvalues before use (see
+        # gwemfish.inference.run_mcmc_informed docstring) -- helps when H0 is near-singular.
+        "regularize": False,
+    },
+
+    # ---- cfg["plot"]: plot_posterior / plot_source_posterior appearance (not read by run_inference) ---
+    "plot": {
+        "plot_mode": "groupwise",  # "groupwise" | "combined" | "subset".
+        "color": "#2c3e50",
+        "truth_color": "red",
+        "show_titles": True,
+        "title_kwargs": {"fontsize": 10},
+        "title_fmt": ".3f",
+        "quantiles": [0.05, 0.5, 0.975],
+        "hist_kwargs": {"density": True},  # dict -> corner.corner(..., hist_kwargs=...).
+        "params_to_plot": None,  # List[str] or None. Only used for plot_mode in ('combined','subset').
+        "figsize": None,
+        "save_path": None,  # str or None, relative to cfg['output']['output_dir'] unless absolute.
+        # str or None. Suffix appended before the file extension, e.g.
+        # "corner_{group_name}.png" + "hmc" -> "corner_{group_name}_hmc.png".
+        "save_tag": None,
+    },
+
+    # ---- cfg["source_plane"]: to_source_plane_samples() controls (image-plane -> source-plane
+    # ray-shooting of POSTERIOR SAMPLES after the fact -- NOT the same thing as the native
+    # '-source'/'nautilus-source' methods, which sample y0gw/y1gw directly and never need this) ----
+    "source_plane": {
+        "n_images": 4,          # NOTE: unused by to_source_plane_samples -- actual image count
+                                 # always follows _resolve_gw_n_images(ctx, cfg), same rule as
+                                 # run_inference. Kept for backward compatibility only.
+        "n_subsample": None,    # int or None. Subsample posterior draws before ray-shooting.
+        "seed": 42,             # int. RNG seed for subsampling.
+        "filter_std": None,     # float or None. Drop source-plane draws beyond this many std devs.
+        "use_filtered": False,  # bool. Whether filter_std is actually applied.
+    },
+
+    # ---- cfg["output"]: save paths (all modes, all methods) ---------------------------------------
+    "output": {
+        "output_dir": "outputs",  # str. Base dir; every other *_path below is relative to this
+                                   # unless it is already absolute.
+        "save_samples_path": None,       # str or None, .npz. Method name is auto-appended as a
+                                          # tag by run_inference (e.g. "samples.npz" ->
+                                          # "samples_hmc_informed.npz") -- you do not need to
+                                          # vary this by hand per method.
+        "save_truths_path": None,        # str or None, .npz. Same auto-tagging as above.
+        "save_source_samples_path": None,  # str or None, .npz. Used by to_source_plane_samples's
+                                            # caller convention (not written by run_inference itself).
+        "save_system_plot_path": None,   # str or None, .png. plot_system_observation() output.
+        "json_path": None,  # str or None. Pipeline JSON (injection + setup + samples + truths).
+                            # Same auto-method-tagging as save_samples_path/save_truths_path
+                            # inside run_inference. Legacy alias: "save_pipeline_json_path".
+        # str or None. NOT present in make_default_cfg()'s returned dict. IMPORTANT NUANCE:
+        # run_inference's OWN pipeline-JSON save (fisher/deriv-approx/hmc/hmc-informed branches,
+        # and the nautilus finish helper) does NOT read this key at all -- it always tags
+        # json_path with the METHOD NAME automatically (see save_json_path =
+        # _append_tag_to_path(save_json_path, method_norm) in simple_pipeline.py). "json_tag" IS
+        # read, however, by to_source_plane_samples (see its docstring) for the SEPARATE pipeline
+        # JSON it writes after ray-shooting samples to the source plane. So: setting
+        # cfg["output"]["json_tag"] before calling run_inference is harmless but has no effect on
+        # run_inference's own JSON; set it (or rely on ctx["cfg"]) before calling
+        # to_source_plane_samples if you want a tagged source-plane pipeline JSON. Legacy alias:
+        # "save_pipeline_json_tag".
+        "json_tag": None,
+        # "gw" (default) | "em" | "both" | "none". Which observation(s) plot_system_observation
+        # overlays image markers for.
+        "system_plot_image_overlay": "gw",
+    },
+
+    # ---- cfg["use_parameter_layout"]: flat-name convention switch (all modes, all methods) --------
+    # bool. False (default) = legacy hardcoded single-main-lens flat names (lens_theta_E, lens_e1,
+    # lens_e2, lens_gamma, lens_gamma1, lens_gamma2, lens_center_x, lens_center_y, plus
+    # source_*/light_* from kwargs_source[0]/kwargs_lens_light[0] only). Assumes an EPL+SHEAR
+    # decomposition; wrong for e.g. SIS-only or multi-lens-plane systems.
+    # True = auto-generated flat names for EVERY component in lens_model_list / kwargs_source /
+    # kwargs_lens_light: "lens{i}_{param}" (i = index into lens_model_list, e.g. lens0_theta_E,
+    # lens1_gamma1 for EPL+SHEAR), "source{j}_{param}", "light{k}_{param}" -- see
+    # parameter_layout.build_parameter_layout / build_mass_parameter_entries. Default priors per
+    # profile come from gwemfish.profile_prior_rules.required_default_sampler instead of the
+    # hardcoded image-plane defaults. As of the current codebase this flag is GENERALIZED: it
+    # works uniformly across deriv-approx, hmc, hmc-informed, nautilus-image, AND the source-plane
+    # family (deriv-approx-source, hmc-source, hmc-informed-source, nautilus-source) -- not just
+    # the original image-plane methods. The ONLY place it is REQUIRED (not just opt-in) is
+    # EM-only + method='nautilus-source'/'nautilus-image' (build_em_only_nautilus_problem raises
+    # ValueError without it). Everywhere else, False remains a fully supported, non-breaking default.
+    "use_parameter_layout": False,
+
+    # ---- cfg["nautilus"]: Nautilus nested-sampler controls ----------------------------------------
+    # NOT present in make_default_cfg()'s returned dict at all -- entirely optional and only read
+    # when method is 'nautilus-source' or 'nautilus-image' (see simple_pipeline._finish_nautilus_run,
+    # nautilus_common.run_nautilus, nautilus_source_inference.build_gw_source_plane_problem /
+    # build_em_gw_source_plane_problem). Safe to omit for every other method.
+    "nautilus": {
+        "n_live": 500,     # int. Live points -> nautilus.Sampler(n_live=...).
+        "filepath": None,  # str or None. HDF5 checkpoint path -> nautilus.Sampler(filepath=...).
+                           # IMPORTANT: changing free parameters or priors after a checkpoint
+                           # exists requires resume=False (or delete the .hdf5) -- otherwise
+                           # Nautilus silently resumes sampling the OLD problem.
+        "resume": True,    # bool -> nautilus.Sampler(resume=...).
+        "verbose": True,   # bool -> sampler.run(verbose=...).
+        # The following four are forwarded as **run_kwargs to sampler.run(...) (NOT to the
+        # Sampler constructor) -- see simple_pipeline._finish_nautilus_run's run_kwarg_keys set:
+        "n_eff": None,               # float or None. Target effective sample size to stop at.
+        "n_like_max": None,          # int or None. Max likelihood evaluations before stopping.
+        "discard_exploration": None,  # bool or None. Discard the exploration-phase live points.
+        "timeout": None,             # float or None, seconds. Wall-clock stop condition.
+        # The following two are consumed directly by nautilus_source_inference /
+        # nautilus_image_inference (NOT forwarded to nautilus.Sampler or sampler.run at all --
+        # simple_pipeline._finish_nautilus_run explicitly skips them via its `_skip` set):
+        "solver_backend": "helens",       # "helens" | "jaxtronomy". Which lens-equation solver
+                                           # nautilus-source uses to go from y0gw/y1gw to image
+                                           # positions for the GW loglikelihood. 'jaxtronomy' is
+                                           # typically faster; 'helens' matches the differentiable
+                                           # solver used by the '-source' NUTS family exactly.
+        "solver_validation_tol": 0.05,  # float, arcsec. At problem-build time, the chosen solver
+                                        # is validated against ctx's truth image positions; a
+                                        # residual above this tolerance emits a UserWarning
+                                        # (does not raise) suggesting finer solver grid settings.
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# PRIORS_EXAMPLES
+#
+# Same physical system (EPL main lens + external SHEAR), same free parameters,
+# shown in both flat-naming conventions so the correspondence between
+# use_parameter_layout=False and use_parameter_layout=True is unambiguous.
+# lens_model_list = ["EPL", "SHEAR"] => layout mode gives "lens0_*" (EPL) and
+# "lens1_*" (SHEAR), per parameter_layout.build_parameter_layout /
+# build_mass_parameter_entries (flat_key = f"lens{i}_{param}" for the i-th
+# entry of lens_model_list; SHEAR's own params are gamma1/gamma2/ra_0/dec_0).
+# ---------------------------------------------------------------------------
+
+PRIORS_EXAMPLE_LEGACY_FLAT = {
+    # use_parameter_layout=False (default). Hardcoded EPL+SHEAR flat names --
+    # these exact keys exist regardless of lens_model_list content (see
+    # simple_pipeline._legacy_epl_like_kw / _legacy_shear_kw): if the real lens
+    # has no EPL/SHEAR component these fall back to _LEGACY_TRUTH_MASS_KW_FALLBACK
+    # (theta_E=1.0, e1=e2=0.0, gamma=2.0, center_x=center_y=0.0) rather than
+    # raising, but that fallback is almost never physically meaningful for a
+    # non-EPL system -- prefer use_parameter_layout=True for anything beyond
+    # single EPL(+SHEAR).
+    "lens_theta_E": dist.Uniform(0.5, 2.0),
+    "lens_e1": dist.Normal(0.0, 0.3),
+    "lens_e2": dist.Normal(0.0, 0.3),
+    "lens_gamma": dist.Uniform(1.5, 2.5),
+    "lens_center_x": 0.0,   # fixed (float) -- no gradient taken w.r.t. this key
+    "lens_center_y": 0.0,   # fixed (float)
+    "lens_gamma1": dist.Uniform(-0.3, 0.3),
+    "lens_gamma2": dist.Uniform(-0.3, 0.3),
+}
+
+PRIORS_EXAMPLE_LAYOUT_FLAT = {
+    # use_parameter_layout=True. Same physical priors as above, one block per
+    # lens_model_list entry: lens0_* <-> EPL (index 0), lens1_* <-> SHEAR (index 1).
+    # Any entry you omit here falls back to the profile's own default sampler
+    # from gwemfish.profile_prior_rules (not to the legacy image-plane
+    # defaults) -- so the two dicts above/below are NOT drop-in replacements
+    # for each other's omissions, only for the keys both explicitly set.
+    "lens0_theta_E": dist.Uniform(0.5, 2.0),
+    "lens0_e1": dist.Normal(0.0, 0.3),
+    "lens0_e2": dist.Normal(0.0, 0.3),
+    "lens0_gamma": dist.Uniform(1.5, 2.5),
+    "lens0_center_x": 0.0,
+    "lens0_center_y": 0.0,
+    "lens1_gamma1": dist.Uniform(-0.3, 0.3),
+    "lens1_gamma2": dist.Uniform(-0.3, 0.3),
+    # SHEAR also carries ra_0/dec_0 (shear reference point); parameter_layout
+    # includes them as lens1_ra_0/lens1_dec_0 if SHEAR's param_names lists them.
+    # Typically fixed to the lens center, e.g.:
+    "lens1_ra_0": 0.0,
+    "lens1_dec_0": 0.0,
+}
+
+
+def nautilus_priors_from_fisher_h0(ctx, span=2.0):
+    """Build tight Uniform(mu +/- span*sigma) priors for Nautilus from a prior
+    Fisher / deriv-approx run, following the gwemfish-infer skill's
+    NAUTILUS_SIGMA_SPAN workflow.
+
+    Call this AFTER `run_inference(ctx, mode=..., method='deriv-approx', ...)`
+    (or method='fisher') has populated `ctx['likelihood']` and `ctx['fisher']`,
+    and BEFORE `run_inference(ctx, mode=..., method='nautilus-source'` or
+    `'nautilus-image', ...)`. Mutates and returns ctx['cfg']['priors'] in place.
+
+    Convention used across examples/scripts: span=5.0 for EM-only (see
+    em_nautilus.py), span=2.0 for GW-only / EM+GW (see gw_only_nautilus.py,
+    gw_only_nautilus_image.py).
+
+    Caveat for method='nautilus-source' specifically: H0 from an image-plane
+    deriv-approx run covers lens0_*/lens_*, T_star, dL, image_x*/image_y* --
+    it never covers y0gw/y1gw (those only exist in the source-plane
+    parametrization). Set cfg["gw"]["source_plane_bounds"] and/or
+    cfg["priors"]["y0gw"/"y1gw"] by hand for that method; this function will
+    simply skip keys not present in keys_to_include.
+    """
+    keys = ctx["likelihood"]["keys_to_include"]
+    u0 = np.asarray(ctx["likelihood"]["u0"])
+    h0 = np.asarray(ctx["fisher"]["H0"])
+    fisher_matrix = -h0
+    try:
+        cov = np.linalg.inv(fisher_matrix)
+    except np.linalg.LinAlgError:
+        cov = np.linalg.pinv(fisher_matrix)
+    sigmas = np.sqrt(np.diag(cov))
+
+    priors = ctx["cfg"].setdefault("priors", {})
+    for i, key in enumerate(keys):
+        sigma = float(sigmas[i])
+        if not np.isfinite(sigma) or sigma <= 0:
+            continue
+        mu = float(u0[i])
+        priors[key] = dist.Uniform(mu - span * sigma, mu + span * sigma)
+    return priors

@@ -14,7 +14,9 @@ import numpyro
 import numpyro.distributions as dist
 import herculens as hcl
 
+from .config import SOLVER_PARAMS
 from .data_sim import compute_gw_from_images
+from .lens_setup import remove_central_image
 from .parameter_layout import ParamEntry, flat_keys, unpack_to_kwargs
 from .priors import DEFAULT_IMAGE_POSITION_PRIORS_EM, DEFAULT_IMAGE_POSITION_PRIORS_GW
 from .prob_model import _sample_image_positions
@@ -42,6 +44,22 @@ def _default_extra_priors_gw_only() -> Dict[str, Callable[[], Any]]:
     return {
         "T_star": lambda: numpyro.sample("T_star", dist.Uniform(1e1, 1e12)),
         "dL": lambda: numpyro.sample("dL", dist.Uniform(0.00001, 50000.0)),
+    }
+
+
+def _default_extra_priors_gw_only_source() -> Dict[str, Callable[[], Any]]:
+    return {
+        **_default_extra_priors_gw_only(),
+        "y0gw": lambda: numpyro.sample("y0gw", dist.Uniform(-1.0, 1.0)),
+        "y1gw": lambda: numpyro.sample("y1gw", dist.Uniform(-1.0, 1.0)),
+    }
+
+
+def _default_extra_priors_em_gw_source() -> Dict[str, Callable[[], Any]]:
+    return {
+        **_default_extra_priors_em_gw(),
+        "y0gw": lambda: numpyro.sample("y0gw", dist.Uniform(-1.0, 1.0)),
+        "y1gw": lambda: numpyro.sample("y1gw", dist.Uniform(-1.0, 1.0)),
     }
 
 
@@ -357,3 +375,253 @@ class FlexProbModelGWOnly(hcl.NumpyroModel):
         return base + extra + [f"image_x{i+1}" for i in range(self.n_images)] + [
             f"image_y{i+1}" for i in range(self.n_images)
         ]
+
+
+class FlexProbModelSourcePlaneGWOnly(hcl.NumpyroModel):
+    """GW-only model, source-plane parametrisation, flat lens0_*/lens1_*/... mass
+    parameters (parameter_layout equivalent of ``ProbModelSourcePlane_GW_only`` in
+    ``prob_model.py``).
+
+    Samples y0gw/y1gw directly and solves the lens equation *inside* the model via
+    ``solver.solve(...)``, mirroring ``ProbModelSourcePlane_GW_only``'s structure but
+    with a flat mass-parameter layout instead of hardcoded single-lens names. Pass a
+    ``DifferentiableLensEquationSolver`` (``differentiable_solver.py``) as ``solver``
+    for correct gradients (deriv-approx-source / Fisher); the raw helens solver gives
+    exact-zero gradients there.
+
+    Like ``ProbModelSourcePlane_GW_only``, this adds no betx_x_diff/bety_y_diff/
+    log_jacobian terms -- the solver enforces beta self-consistency exactly by
+    construction and the y0gw/y1gw prior is already flat in the source plane.
+    """
+
+    def __init__(
+        self,
+        entries: Sequence[ParamEntry],
+        priors: Dict[str, Callable[[], Any]],
+        *,
+        n_images: int,
+        gw_observations: Optional[Dict[str, Any]] = None,
+        lens_gw=None,
+        solver=None,
+        solver_params: Optional[Dict[str, Any]] = None,
+        gw_error_scales: Optional[Dict[str, Any]] = None,
+        extra_priors: Optional[Dict[str, Callable[[], Any]]] = None,
+        use_mst: bool = False,
+    ):
+        self.entries = list(entries)
+        self.priors = {**(_default_extra_priors_gw_only_source()), **(extra_priors or {}), **priors}
+        self.use_mst = bool(use_mst)
+        self.n_mass = len(lens_gw.mass_model.func_list)
+        self.n_images = n_images
+        self.gw_observations = gw_observations or {}
+        self.lens_gw = lens_gw
+        self.solver = solver
+        self.solver_params = solver_params if solver_params is not None else SOLVER_PARAMS.copy()
+        self.gw_error_scales = {
+            "sigma_td": 0.05,
+            "sigma_dL_eff": 0.02,
+            **(gw_error_scales or {}),
+        }
+        super().__init__()
+
+    def model(self):
+        p = self.priors
+        flat: Dict[str, Any] = {}
+        for e in self.entries:
+            flat[e.flat_key] = p[e.flat_key]()
+        flat["T_star"] = p["T_star"]()
+        flat["dL"] = p["dL"]()
+        flat["y0gw"] = p["y0gw"]()
+        flat["y1gw"] = p["y1gw"]()
+
+        kl, _, _ = unpack_to_kwargs(
+            flat, self.entries, n_mass=self.n_mass, n_source=0, n_lens_light=0
+        )
+
+        lens_center_x = kl[0].get("center_x", 0.0)
+        lens_center_y = kl[0].get("center_y", 0.0)
+        betas = jnp.array([flat["y0gw"], flat["y1gw"]])
+
+        result_thetas, result_betas = self.solver.solve(betas, kl, **self.solver_params)
+        (result_theta_x_no_central, result_theta_y_no_central,
+         _, _) = remove_central_image(result_thetas, result_betas,
+                                      lens_center_x, lens_center_y)
+
+        x_pos_array = jnp.array(result_theta_x_no_central)
+        y_pos_array = jnp.array(result_theta_y_no_central)
+
+        T_star, dL = flat["T_star"], flat["dL"]
+        k_mst_kw = p["k_mst"]() if self.use_mst else None
+        (_, model_time_delays, _, model_dL_eff,
+         _, _, _, _) = compute_gw_from_images(
+            x_pos_array, y_pos_array, kl, self.lens_gw, T_star, dL, k_mst=k_mst_kw)
+
+        gw_obs = self.gw_observations
+        sigma_td = jnp.maximum(
+            self.gw_error_scales.get("sigma_td_floor", 1.0),
+            self.gw_error_scales["sigma_td"] * gw_obs["time_delays"],
+        )
+        sigma_dL_eff = self.gw_error_scales["sigma_dL_eff"] * gw_obs["dL_eff"]
+
+        numpyro.sample(
+            "tdelays_obs",
+            dist.Independent(dist.Normal(model_time_delays, sigma_td), 1),
+            obs=gw_obs["time_delays"],
+        )
+        numpyro.sample(
+            "dL_eff_obs",
+            dist.Independent(dist.Normal(model_dL_eff, sigma_dL_eff), 1),
+            obs=gw_obs["dL_eff"],
+        )
+
+    def params2kwargs(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        kl, _, _ = unpack_to_kwargs(
+            params, self.entries, n_mass=self.n_mass, n_source=0, n_lens_light=0
+        )
+        return {
+            "kwargs_lens": kl,
+            "y0gw": params.get("y0gw", 0.0),
+            "y1gw": params.get("y1gw", 0.0),
+        }
+
+    def all_flat_keys(self) -> List[str]:
+        base = flat_keys(self.entries)
+        extra = ["T_star", "dL", "y0gw", "y1gw"]
+        if self.use_mst:
+            extra.append("k_mst")
+        return base + extra
+
+
+class FlexProbModelSourcePlaneEMGW(hcl.NumpyroModel):
+    """EM + GW joint model, source-plane parametrisation, flat lens0_*/source0_*/
+    light0_* parameters (parameter_layout equivalent of ``ProbModelSourcePlane`` in
+    ``prob_model.py``).
+
+    Samples y0gw/y1gw directly and solves the lens equation *inside* the model via
+    ``solver.solve(...)`` -- see ``FlexProbModelSourcePlaneGWOnly`` /
+    ``ProbModelSourcePlane_GW_only`` docstrings for why no betx_x_diff/bety_y_diff/
+    log_jacobian terms are needed here either.
+    """
+
+    def __init__(
+        self,
+        entries: Sequence[ParamEntry],
+        priors: Dict[str, Callable[[], Any]],
+        *,
+        n_images: int,
+        gw_observations: Optional[Dict[str, Any]] = None,
+        em_observations: Optional[Dict[str, Any]] = None,
+        lens_image=None,
+        lens_gw=None,
+        noise=None,
+        solver=None,
+        solver_params: Optional[Dict[str, Any]] = None,
+        gw_error_scales: Optional[Dict[str, Any]] = None,
+        extra_priors: Optional[Dict[str, Callable[[], Any]]] = None,
+        use_mst: bool = False,
+    ):
+        self.entries = list(entries)
+        self.priors = {**(_default_extra_priors_em_gw_source()), **(extra_priors or {}), **priors}
+        self.use_mst = bool(use_mst)
+        self.n_mass = len(lens_image.MassModel.func_list)
+        self.n_source = len(lens_image.SourceModel.func_list)
+        self.n_lens_light = len(lens_image.LensLightModel.func_list)
+        self.n_images = n_images
+        self.gw_observations = gw_observations or {}
+        self.em_observations = em_observations or {}
+        self.lens_image = lens_image
+        self.lens_gw = lens_gw
+        self.noise = noise
+        self.solver = solver
+        self.solver_params = solver_params if solver_params is not None else SOLVER_PARAMS.copy()
+        self.gw_error_scales = {
+            "sigma_td": 0.3,
+            "sigma_dL_eff": 0.3,
+            **(gw_error_scales or {}),
+        }
+        super().__init__()
+
+    def model(self):
+        p = self.priors
+        flat: Dict[str, Any] = {}
+        for e in self.entries:
+            flat[e.flat_key] = p[e.flat_key]()
+        flat["noise_sigma_bkg"] = p["noise_sigma_bkg"]()
+        flat["T_star"] = p["T_star"]()
+        flat["dL"] = p["dL"]()
+        flat["y0gw"] = p["y0gw"]()
+        flat["y1gw"] = p["y1gw"]()
+
+        kl, ks, kll = unpack_to_kwargs(
+            flat, self.entries, n_mass=self.n_mass, n_source=self.n_source, n_lens_light=self.n_lens_light
+        )
+
+        k_mst_kw = p["k_mst"]() if self.use_mst else None
+        if self.use_mst:
+            self.lens_image.MassModel.kappa0 = k_mst_kw
+
+        sigma_bkg = flat["noise_sigma_bkg"]
+        model_image = self.lens_image.model(
+            kwargs_lens=kl, kwargs_lens_light=kll, kwargs_source=ks
+        )
+        em_data = self.em_observations["data"]
+        model_var = self.noise.C_D_model(model_image, background_rms=sigma_bkg)
+        numpyro.sample(
+            "obs",
+            dist.Independent(dist.Normal(model_image, jnp.sqrt(model_var)), 2),
+            obs=em_data,
+        )
+
+        lens_center_x = kl[0].get("center_x", 0.0)
+        lens_center_y = kl[0].get("center_y", 0.0)
+        betas = jnp.array([flat["y0gw"], flat["y1gw"]])
+
+        result_thetas, result_betas = self.solver.solve(betas, kl, **self.solver_params)
+        (result_theta_x_no_central, result_theta_y_no_central,
+         _, _) = remove_central_image(result_thetas, result_betas,
+                                      lens_center_x, lens_center_y)
+
+        x_pos_array = jnp.array(result_theta_x_no_central)
+        y_pos_array = jnp.array(result_theta_y_no_central)
+
+        T_star, dL = flat["T_star"], flat["dL"]
+        (_, model_time_delays, _, model_dL_eff,
+         _, _, _, _) = compute_gw_from_images(
+            x_pos_array, y_pos_array, kl, self.lens_gw, T_star, dL, k_mst=k_mst_kw)
+
+        gw_obs = self.gw_observations
+        sigma_td = jnp.maximum(
+            self.gw_error_scales.get("sigma_td_floor", 1.0),
+            self.gw_error_scales["sigma_td"] * gw_obs["time_delays"],
+        )
+        sigma_dL_eff = self.gw_error_scales["sigma_dL_eff"] * gw_obs["dL_eff"]
+
+        numpyro.sample(
+            "tdelays_obs",
+            dist.Independent(dist.Normal(model_time_delays, sigma_td), 1),
+            obs=gw_obs["time_delays"],
+        )
+        numpyro.sample(
+            "dL_eff_obs",
+            dist.Independent(dist.Normal(model_dL_eff, sigma_dL_eff), 1),
+            obs=gw_obs["dL_eff"],
+        )
+
+    def params2kwargs(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        kl, ks, kll = unpack_to_kwargs(
+            params, self.entries, n_mass=self.n_mass, n_source=self.n_source, n_lens_light=self.n_lens_light
+        )
+        return {
+            "kwargs_lens": kl,
+            "kwargs_source": ks,
+            "kwargs_lens_light": kll,
+            "y0gw": params.get("y0gw", 0.0),
+            "y1gw": params.get("y1gw", 0.0),
+        }
+
+    def all_flat_keys(self) -> List[str]:
+        base = flat_keys(self.entries)
+        extra = ["noise_sigma_bkg", "T_star", "dL", "y0gw", "y1gw"]
+        if self.use_mst:
+            extra.append("k_mst")
+        return base + extra

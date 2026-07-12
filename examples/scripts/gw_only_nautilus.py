@@ -1,13 +1,11 @@
 """
-GW-only comparison: nautilus-source vs deriv-approx vs fisher.
+GW-only comparison: deriv-approx vs deriv-approx-source vs nautilus-source vs fisher.
 
-Per-method groupwise source-plane corners; three-way overlay via
+Per-method groupwise source-plane corners; four-way overlay via
 create_default_param_groups + plot_multi_comparison_corner.
 """
 
 import os
-
-from numpy._core.numeric import False_
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OUTPUT_DIR = os.path.join(REPO_ROOT, "examples/outputs/outputs_gw_only_nautilus")
@@ -25,8 +23,13 @@ PIPELINE_JSON_BASE       = "pipeline_outputs.json"
 COMPARISON_SOURCE_CORNER_PATH = os.path.join(OUTPUT_DIR, "comparison_source_plane_{group_name}.png")
 COMPARISON_SOURCE_ALL_PATH = os.path.join(OUTPUT_DIR, "comparison_source_plane_all.png")
 
-METHODS = ("deriv-approx", "nautilus-source", "fisher")
-METHOD_COLORS = {"deriv-approx": "C0", "nautilus-source": "C1", "fisher": "C2"}
+METHODS = ("deriv-approx", "deriv-approx-source", "nautilus-source", "fisher")
+METHOD_COLORS = {
+    "deriv-approx": "C0",
+    "deriv-approx-source": "C3",
+    "nautilus-source": "C1",
+    "fisher": "C2",
+}
 SOURCE_PLANE_CFG = {
     "source_plane": {"filter_std": None, "use_filtered": False},
 }
@@ -138,7 +141,7 @@ gw_src = ctx["cfg"]["gw"]["source_pos"]
 t_star_true = float(tp["T_star"])
 dL_true = float(tp["dL"])
 
-# Free: lens0_gamma/e2, T_star, dL, image positions (deriv/fisher), y0gw/y1gw (nautilus).
+# Free: lens0_gamma/e2, T_star, dL, image positions (deriv/fisher), y0gw/y1gw (source-plane methods).
 # Everything else fixed to truth.
 ctx["cfg"]["priors"] = {
     "lens0_theta_E":  float(tp["lens0_theta_E"]),
@@ -242,6 +245,35 @@ plot_source_posterior(
     },
 )
 sp_deriv = source_out_deriv["source_plane_samples_plot"]
+
+# --------------------------------------------------------------------------
+# deriv-approx-source (native source-plane; same ctx priors, flex layout)
+# --------------------------------------------------------------------------
+print("\n--- GW-only inference: deriv-approx-source ---\n")
+
+deriv_source_cfg = {
+    "inference": {"informed": True},
+    "output": {
+        "output_dir": OUTPUT_DIR,
+        "json_path": PIPELINE_JSON_BASE,
+        "json_tag": "deriv-approx-source",
+    },
+}
+samples_deriv_source, _ = run_inference(
+    ctx, mode="GW-only", method="deriv-approx-source", cfg=deriv_source_cfg,
+)
+
+corner_dir_deriv_source = os.path.join(OUTPUT_DIR, "deriv_approx_source")
+os.makedirs(corner_dir_deriv_source, exist_ok=True)
+
+plot_source_posterior(
+    samples_deriv_source, truths=truths_source,
+    cfg={
+        "output": {"output_dir": corner_dir_deriv_source},
+        "plot": {"plot_mode": "groupwise", "save_path": SOURCE_PLANE_CORNER_PATH},
+    },
+)
+sp_deriv_source = samples_deriv_source
 
 ## Activate this if tightening the priors on the free parameters (deriv-approx)
 # print("\n--- Nautilus-source priors from Fisher H0 (deriv-approx) ---\n")
@@ -365,10 +397,11 @@ plot_source_posterior(
 sp_fisher = source_out_fisher["source_plane_samples_plot"]
 
 # --------------------------------------------------------------------------
-# Three-way source-plane comparison: one combined corner + per-group overlays
+# Four-way source-plane comparison: one combined corner + per-group overlays
 # --------------------------------------------------------------------------
 source_by_method = {
     "deriv-approx": sp_deriv,
+    "deriv-approx-source": sp_deriv_source,
     "nautilus-source": sp_nautilus,
     "fisher": sp_fisher,
 }
@@ -385,6 +418,7 @@ truths_dict_sp = {
 }
 comparison_labels = [
     "deriv-approx (ray-shot)",
+    "deriv-approx-source (native source-plane)",
     "nautilus-source (source-plane)",
     "fisher (ray-shot)",
 ]

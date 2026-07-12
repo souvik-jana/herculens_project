@@ -37,7 +37,13 @@ from .parameter_layout import (
     make_infer_array_shape,
     truth_vector_from_kwargs,
 )
-from .flex_prob_model import FlexProbModelEMGW, FlexProbModelEMOnly, FlexProbModelGWOnly
+from .flex_prob_model import (
+    FlexProbModelEMGW,
+    FlexProbModelEMOnly,
+    FlexProbModelGWOnly,
+    FlexProbModelSourcePlaneEMGW,
+    FlexProbModelSourcePlaneGWOnly,
+)
 from .inference import run_mcmc
 from .nautilus_common import run_nautilus, build_em_only_nautilus_problem
 from .nautilus_source_inference import (
@@ -168,5 +174,7 @@ __all__ = [
     'FlexProbModelEMGW',
     'FlexProbModelEMOnly',
     'FlexProbModelGWOnly',
+    'FlexProbModelSourcePlaneEMGW',
+    'FlexProbModelSourcePlaneGWOnly',
 ]
 

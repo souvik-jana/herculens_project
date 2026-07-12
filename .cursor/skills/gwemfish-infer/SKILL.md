@@ -7,7 +7,7 @@ description: Runs GWEMFISH run_inference with mode/method selection, priors from
 
 **Do not call `run_inference` until the user has chosen options below.** Use `AskQuestion` when available; skip only if the user already specified everything in the same message.
 
-Read `gwemfish-local` (`~/.cursor/skills/gwemfish-local/`) for repo paths if set; else use the open repo root. Copy priors patterns from the closest `examples/scripts/` file.
+Read `gwemfish-local` (`~/.cursor/skills/gwemfish-local/`) for repo paths if set; else use the open repo root. Start from `scripts/cfg.py` (canonical complete config, every key documented inline); copy narrower priors patterns from the closest `examples/scripts/` file when useful.
 
 ## Question 1 — Mode (ask if unclear)
 
@@ -25,34 +25,49 @@ Read `gwemfish-local` (`~/.cursor/skills/gwemfish-local/`) for repo paths if set
 | Derivative approx | `deriv-approx` |
 | Full HMC | `hmc` |
 | HMC informed | `hmc-informed` |
+| Derivative approx (source-plane) | `deriv-approx-source` |
+| Full HMC (source-plane) | `hmc-source` |
+| HMC informed (source-plane) | `hmc-informed-source` |
 | Nautilus source-plane | `nautilus-source` |
 | Nautilus image-plane | `nautilus-image` |
+
+`deriv-approx-source`/`hmc-source`/`hmc-informed-source` sample the GW source position (`y0gw`/`y1gw`) directly and solve the lens equation inside the model. Valid only for `mode` in (`GW-only`, `EM+GW`) — **not** `EM-only` (unlike every other method here, which does support `EM-only`).
 
 Multi-method comparison allowed (e.g. deriv-approx + nautilus-source + fisher in `em_nautilus.py`).
 
 For GW modes, ask which Nautilus variant when unclear: **source-plane** (`y0gw`/`y1gw`) vs **image-plane** (`image_x*`/`image_y*`). EM-only: either name works; prefer `nautilus-source`.
 
-## Question 3 — Informed NUTS (deriv-approx or hmc only)
+## Question 2.5 — Parameter layout (ask if unclear, `GW-only`/`EM+GW`, any method)
+
+Ask: does the lens have more than one independently-parametrized mass component (e.g. main lens + a second galaxy — not just a fixed external shear), or does the user want auto-generated per-profile priors?
+
+- **Yes / unclear-but-useful** → `cfg["use_parameter_layout"] = True`. Flat names become `lens0_*`, `lens1_*`, ... — one block per entry in `lens_mass_model.func_list` (e.g. EPL + Shear = `lens0_*` + `lens1_*`). Priors auto-derived per profile.
+- **Default / legacy** → `False`. Old hardcoded single-lens flat names (`lens_theta_E`, `lens_e1`, ...). Still the default, still works for every method below, no breaking change.
+
+Applies uniformly to **all** of: `deriv-approx`, `hmc`, `hmc-informed`, `nautilus-image`, `deriv-approx-source`, `hmc-source`, `hmc-informed-source`, `nautilus-source`. Only `EM-only`'s nautilus path *requires* it (see reference.md); everywhere else it's opt-in.
+
+## Question 3 — Informed NUTS (deriv-approx/hmc and their source-plane counterparts)
 
 Ask: use Hessian-informed NUTS?
 
 - **Default yes** → `cfg["inference"] = {"informed": True}`
 - No → `{"informed": False}`
-- N/A for `fisher`, `hmc-informed`, `nautilus-source`, `nautilus-image`
+- `hmc-source` behaves like `hmc` (optional `informed`); `hmc-informed-source` behaves like `hmc-informed` (always informed, flag ignored); `deriv-approx-source` behaves like `deriv-approx` (optional `informed`, default recommendation still yes).
+- N/A for `fisher`, `hmc-informed`, `hmc-informed-source`, `nautilus-source`, `nautilus-image`
 
 ## Question 3.5 — epsilon and image-plane/source-plane comparability
 
-**Applies when comparing any image-plane sampler to `nautilus-source`.** Image-plane methods share `ProbModel` and `cfg["gw"]["error_scales"]["epsilon"]` (default **0.005**):
+**Applies when comparing any image-plane sampler to any source-plane sampler.** Image-plane methods share `ProbModel` and `cfg["gw"]["error_scales"]["epsilon"]` (default **0.005**):
 
 | Image-plane (`ProbModel`) | Source-plane (no `ProbModel`) |
 |---------------------------|-------------------------------|
-| `deriv-approx`, `hmc`, `hmc-informed`, `nautilus-image` | `nautilus-source` only |
+| `deriv-approx`, `hmc`, `hmc-informed`, `nautilus-image` | `deriv-approx-source`, `hmc-source`, `hmc-informed-source`, `nautilus-source` |
 
-Inside `ProbModel.model()` (`flex_prob_model.py` / `prob_model.py`), `epsilon` sets a soft `Normal(0, epsilon)` on `betx_x_diff`/`bety_y_diff` (images must ray-shoot to one source) plus `log_jacobian = -sum(log|mu_i|)`. `nautilus-source` forward-solves from sampled `y0gw`/`y1gw` — no equivalent term.
+Inside `ProbModel.model()` (`flex_prob_model.py` / `prob_model.py`), `epsilon` sets a soft `Normal(0, epsilon)` on `betx_x_diff`/`bety_y_diff` (images must ray-shoot to one source) plus `log_jacobian = -sum(log|mu_i|)`. Every source-plane method forward-solves from sampled `y0gw`/`y1gw` (`ProbModelSourcePlane*` / `FlexProbModelSourcePlane*`) — no equivalent term, no betx/bety scatter floor.
 
-**Consequence:** `to_source_plane_samples` from any image-plane method has a scatter floor from `epsilon`, not just the GW likelihood. Loose default (`0.005`) can make image-plane methods look ~2–3× wider than `nautilus-source` on the same system even when both are correct.
+**Consequence:** `to_source_plane_samples` from any image-plane method has a scatter floor from `epsilon`, not just the GW likelihood. Loose default (`0.005`) can make image-plane methods look ~2–3× wider than any source-plane method (`nautilus-source`, `deriv-approx-source`, `hmc-source`, `hmc-informed-source`) on the same system even when both are correct.
 
-**Before comparing to `nautilus-source`:** tighten epsilon (start **`1e-4`**):
+**Before comparing to a source-plane method:** tighten epsilon (start **`1e-4`**):
 
 ```python
 ctx["cfg"]["gw"]["error_scales"]["epsilon"] = 1e-4
@@ -60,9 +75,9 @@ ctx["cfg"]["gw"]["error_scales"]["epsilon"] = 1e-4
 
 - **NUTS** (`deriv-approx`, `hmc`): if divergences/stiffness, back off (e.g. `1e-3`) and/or raise `num_warmup`.
 - **Nautilus-image**: sharper surface — raise `n_live` / `n_eff` if acceptance slows.
-- **Diagnostic:** per-sample `y0gw_std` / `y1gw_std` from `image_to_source.image_samples_to_source_samples` — if large vs posterior width, `epsilon` dominates scatter; comparison to `nautilus-source` is not apples-to-apples yet.
+- **Diagnostic:** per-sample `y0gw_std` / `y1gw_std` from `image_to_source.image_samples_to_source_samples` — if large vs posterior width, `epsilon` dominates scatter; comparison to a source-plane method is not apples-to-apples yet.
 
-**Does NOT apply:** two image-plane methods vs each other (e.g. `deriv-approx` vs `nautilus-image`) — same `ProbModel`, same `epsilon`; they should agree regardless of epsilon. If they disagree, treat as a real bug (prior mismatch, non-convergence, solver backend, wiring) — not an epsilon caveat.
+**Does NOT apply:** two image-plane methods vs each other (e.g. `deriv-approx` vs `nautilus-image`), or two source-plane methods vs each other (e.g. `hmc-source` vs `nautilus-source`) — same model family, no epsilon asymmetry; they should agree regardless of epsilon. If they disagree, treat as a real bug (prior mismatch, non-convergence, solver backend, wiring) — not an epsilon caveat.
 
 See `gwemfish-plot` skill for overlay interpretation.
 
@@ -111,14 +126,14 @@ for i, key in enumerate(keys):
     print(f"  Nautilus prior {key}: Uniform({lo:.4g}, {hi:.4g})  [mu={mu:.4g}, sigma={sig:.4g}]")
 ```
 
-**Source-plane caveat (`nautilus-source` only):** H₀ from image-plane deriv-approx covers `lens0_*`, `T_star`, `dL`, `image_x*`/`image_y*` — **not** `y0gw`/`y1gw`. Image keys updated in `ctx` are ignored by nautilus-source. Keep manual `y0gw`/`y1gw` boxes via `ctx["cfg"]["priors"]` and/or `cfg["gw"]["source_plane_bounds"]`. For `nautilus-image`, all H₀ keys apply directly.
+**Source-plane caveat (any source-plane method — `nautilus-source`, `deriv-approx-source`, `hmc-source`, `hmc-informed-source`):** H₀ from image-plane deriv-approx covers `lens0_*`, `T_star`, `dL`, `image_x*`/`image_y*` — **not** `y0gw`/`y1gw`. Image keys updated in `ctx` are ignored by source-plane methods. Keep manual `y0gw`/`y1gw` boxes via `ctx["cfg"]["priors"]` and/or `cfg["gw"]["source_plane_bounds"]` (nautilus) / `cfg["gw"]["source_box_half_width"]` (the NUTS-based source-plane methods). For `nautilus-image`, all H₀ keys apply directly.
 
 3. **Checkpoint** — `cfg["nautilus"] = {"filepath": "...", "resume": False}` when priors change
 4. **GW-only prior choice** — default: Fisher H₀ with `NAUTILUS_SIGMA_SPAN = 2.0` after deriv-approx. Alternative: manual tight truth boxes (`SOURCE_HALF_*`, `IMAGE_BOX_HALF`) when no precursor or for `y0gw`/`y1gw` on source-plane runs
 
 ## Execution
 
-1. Set base `ctx["cfg"]["priors"]` from mode example (`em_gw_new.py`, `gw_only.py`, `em_nautilus.py`).
+1. Start from `scripts/cfg.py` (canonical complete config with every key documented inline); mode-specific example scripts remain useful for narrower copy-paste patterns. Set base `ctx["cfg"]["priors"]` from mode example (`em_gw_new.py`, `gw_only.py`, `em_nautilus.py`).
 2. Nautilus: precursor run → H₀ priors → `run_inference(..., method="nautilus-source")` (EM-only) or choose source vs image for GW.
 3. Else: `samples, truths = run_inference(ctx, mode=..., method=..., cfg={overrides})`.
 4. Optional: `output.json_tag`, `save_samples_path`, pipeline JSON.
