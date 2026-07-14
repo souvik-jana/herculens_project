@@ -269,10 +269,85 @@ def build_em_only_nautilus_problem(ctx, cfg):
     return prior, log_likelihood, param_names
 
 
+def _prior_fingerprint(prior):
+    """JSON-serializable fingerprint of a nautilus.Prior: per-parameter ppf quantiles."""
+    qs = (0.001, 0.25, 0.5, 0.75, 0.999)
+    params = {}
+    for name, dist in zip(prior.keys, prior.dists):
+        try:
+            params[str(name)] = [float(v) for v in np.atleast_1d(dist.ppf(qs))]
+        except Exception:
+            params[str(name)] = None
+    return {"quantiles": list(qs), "params": params}
+
+
+def _check_checkpoint_priors(prior, filepath, resume):
+    """Guard against resuming a nautilus checkpoint under different priors.
+
+    Nautilus stores sample points in the unit cube and maps them through the
+    *current* prior at ``posterior()`` time, so resuming a checkpoint whose
+    priors differ from the current ones silently returns a wrong posterior
+    (stored points get stretched onto the new intervals). A fingerprint
+    sidecar (``<filepath>.priors.json``) is written on every run and compared
+    here on resume; on mismatch a ``ValueError`` is raised.
+    """
+    import json
+    import os
+
+    sidecar = str(filepath) + ".priors.json"
+    fp_new = _prior_fingerprint(prior)
+
+    if resume and os.path.exists(filepath):
+        if not os.path.exists(sidecar):
+            warnings.warn(
+                f"Resuming nautilus checkpoint '{filepath}' without a prior "
+                f"fingerprint sidecar ('{sidecar}'); cannot verify that the current "
+                "priors match the ones the checkpoint was built with. If they "
+                "differ, the returned posterior will be silently wrong."
+            )
+        else:
+            with open(sidecar) as f:
+                fp_old = json.load(f)
+            old_params = fp_old.get("params", {})
+            mismatches = []
+            if list(old_params) != list(fp_new["params"]):
+                mismatches.append(
+                    f"parameter names/order: checkpoint {list(old_params)} "
+                    f"vs current {list(fp_new['params'])}"
+                )
+            elif fp_old.get("quantiles") == fp_new["quantiles"]:
+                for name, old in old_params.items():
+                    new = fp_new["params"][name]
+                    if old is None or new is None:
+                        continue
+                    if not np.allclose(old, new, rtol=1e-6, atol=1e-12):
+                        mismatches.append(
+                            f"{name}: checkpoint quantiles {old} vs current {new}"
+                        )
+            if mismatches:
+                raise ValueError(
+                    "resume=True but the current priors differ from the ones the "
+                    f"nautilus checkpoint '{filepath}' was built with. Nautilus stores "
+                    "unit-cube points and maps them through the CURRENT prior, so "
+                    "resuming would silently return a wrong posterior. Rebuild the "
+                    "original priors, point 'filepath' at a fresh checkpoint, or set "
+                    "resume=False (starts a new run). Mismatched priors:\n  "
+                    + "\n  ".join(mismatches)
+                )
+    return fp_new, sidecar
+
+
 def run_nautilus(prior, log_likelihood, *,
                  n_live=500, filepath=None, verbose=True,
-                 resume=True, run_kwargs=None):
+                 resume=True, prior_check=True, run_kwargs=None):
+    import json
+
     import nautilus
+
+    fp_new = sidecar = None
+    if (filepath is not None and prior_check
+            and hasattr(prior, "keys") and hasattr(prior, "dists")):
+        fp_new, sidecar = _check_checkpoint_priors(prior, filepath, resume)
 
     sampler = nautilus.Sampler(
         prior,
@@ -281,6 +356,12 @@ def run_nautilus(prior, log_likelihood, *,
         filepath=filepath,
         resume=resume,
     )
+    if sidecar is not None:
+        try:
+            with open(sidecar, "w") as f:
+                json.dump(fp_new, f, indent=1)
+        except OSError as exc:
+            warnings.warn(f"Could not write prior fingerprint sidecar '{sidecar}': {exc}")
     sampler.run(verbose=verbose, **(run_kwargs or {}))
 
     points, _, _ = sampler.posterior(equal_weight=True)

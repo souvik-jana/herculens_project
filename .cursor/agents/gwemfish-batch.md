@@ -12,7 +12,7 @@ is_background: false
 
 1. Read `LENSING_MOCK_ROOT/CONTEXT.md` and `DATA.md` (path from `gwemfish-local`, or `../lensing-mock` sibling).
 2. Load `/gwemfish-batch` skill.
-3. For infer method/prior details, follow `gwemfish-infer` AskQuestion gate inside batch context.
+3. For infer method/prior details, follow `gwemfish-infer` AskQuestion gate inside batch context — includes the `-source` methods (`deriv-approx-source`/`hmc-source`/`hmc-informed-source`) and `use_parameter_layout`, not just the older 6-method list.
 
 ## Workflow
 
@@ -28,6 +28,7 @@ is_background: false
 - All commands: `cd LENSING_MOCK_ROOT && uv run python scripts/...`
 - Full reproducible study: `dvc repro`
 - Partial reruns: `run_parallel.py` with `--sims` and `--n-jobs` from `gwemfish-local`
+- Batch YAML support for `use_parameter_layout`/the `-source` methods is unverified from this repo — check `lensing-mock`'s own docs/scripts before assuming batch supports them.
 
 ## Single-system requests
 

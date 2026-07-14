@@ -28,9 +28,13 @@ alwaysApply: false
 ## Inference
 
 - `mode`: `EM+GW`, `EM-only`, `GW-only`
-- `method`: `fisher`, `deriv-approx`, `hmc`, `hmc-informed`, `nautilus`
+- `method`: `fisher`, `deriv-approx`, `hmc`, `hmc-informed`, `fisher-source`, `deriv-approx-source`, `hmc-source`, `hmc-informed-source`, `nautilus-source`, `nautilus-image`
+  - `*-source` methods sample `y0gw`/`y1gw` directly (source-plane); not valid for `mode='EM-only'`
+  - `fisher-source` (like `fisher`): Gaussian N(u0, inv(-H0)), no NUTS — cheapest source-plane covariance
+  - Building `nautilus-source` priors from an image-plane precursor (`fisher`/`deriv-approx`): use `nautilus_source_priors_from_precursor` in `Diagnosis/scripts/task13_nautilus_source_prior_from_precursors/nautilus_source_priors.py` — it ray-shoots `image_x*`/`image_y*` to `y0gw`/`y1gw` first
 - Priors: float = fixed; omit = model default; `Distribution` or callable = sample
 - Nautilus: set `cfg["nautilus"]`; EM-only often needs deriv-approx first → 5σ Uniform priors from H₀ (see `em_nautilus.py`)
+- `cfg["use_parameter_layout"]` (default `False`): switches flat naming to `lens0_*`/`lens1_*`/... per mass profile. Opt-in for all methods above on `GW-only`/`EM+GW`; required (not optional) for `EM-only` nautilus.
 
 ## Scripts
 

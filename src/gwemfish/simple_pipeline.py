@@ -1451,7 +1451,15 @@ def run_inference(
 
     **``nautilus-source``** — Nested sampling with source-plane GW (``y0gw``/``y1gw`` + lens solver).
     **``nautilus-image``** — Nested sampling with image-plane GW (``image_x*``/``image_y*``); EM-only
-    uses the same pixel likelihood as ``nautilus-source``. Sampler settings: ``cfg['nautilus']``.
+    uses the same pixel likelihood as ``nautilus-source``. Sampler settings: ``cfg['nautilus']``
+    (incl. ``prior_check``, default True: checkpointed runs write a prior-fingerprint sidecar
+    ``<filepath>.priors.json`` and refuse ``resume=True`` if the current priors differ from the
+    ones the checkpoint was built with).
+
+    **``fisher-source``** — Source-plane counterpart of ``fisher``: same Fisher-Gaussian-sample
+    early return (``N(u0, inv(-H0))``, no NUTS), but ``H0``/``u0``/``keys_to_include`` come from
+    the source-plane probmodel (``y0gw``/``y1gw``) instead of image positions. Not defined for
+    ``mode='EM-only'`` (mirrors ``deriv-approx-source``).
 
     ``compute_fisher`` always uses the full model to build ``H0`` at the expansion point.
 
@@ -1470,16 +1478,16 @@ def run_inference(
             "or 'nautilus-image' (image-plane GW sampling)."
         )
     if method_norm not in (
-        "deriv-approx", "deriv-approx-source", "fisher", "hmc", "hmc-informed",
+        "deriv-approx", "deriv-approx-source", "fisher", "fisher-source", "hmc", "hmc-informed",
         "hmc-source", "hmc-informed-source",
         "nautilus-source", "nautilus-image",
     ):
         raise ValueError(
             "method must be one of: 'deriv-approx', 'deriv-approx-source', 'fisher', "
-            "'HMC', 'HMC-informed', 'hmc-source', 'hmc-informed-source', "
+            "'fisher-source', 'HMC', 'HMC-informed', 'hmc-source', 'hmc-informed-source', "
             "'nautilus-source', 'nautilus-image'"
         )
-    source_plane_methods = ("deriv-approx-source", "hmc-source", "hmc-informed-source")
+    source_plane_methods = ("deriv-approx-source", "hmc-source", "hmc-informed-source", "fisher-source")
     if method_norm in source_plane_methods and mode == "EM-only":
         raise ValueError(
             f"method={method_norm!r} is not defined for mode='EM-only' "
@@ -1687,7 +1695,7 @@ def run_inference(
     # Fisher-only: sample from Gaussian N(u0, cov)
     priors_for_fisher = priors_flex if priors_flex is not None else priors_combined
 
-    if method_norm == "fisher":
+    if method_norm in ("fisher", "fisher-source"):
         FM = -H0
         try:
             cov = jnp.linalg.inv(FM)
