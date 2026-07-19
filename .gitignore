@@ -43,6 +43,8 @@ Thumbs.db
 *.pkl
 *.h5
 *.hdf5
+*.aux
+*.log
 Diagnosis/
 handoff.md
 
