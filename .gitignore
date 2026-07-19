@@ -43,3 +43,12 @@ Thumbs.db
 *.pkl
 *.h5
 *.hdf5
+*.aux
+*.log
+Diagnosis/
+handoff.md
+
+# comparison-analysis only: track report PDF (plots live in the report)
+!comparison-analysis/report/
+!comparison-analysis/report/**/
+!comparison-analysis/report/**/*.pdf

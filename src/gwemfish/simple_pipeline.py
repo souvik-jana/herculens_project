@@ -1194,6 +1194,174 @@ def _build_inference_probmodel(ctx, mode, cfg_full):
     }
 
 
+def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
+    """Build the source-plane NumPyro probmodel (ProbModelSourcePlane /
+    ProbModelSourcePlane_GW_only) with a *differentiable* solver, for
+    method='deriv-approx-source'. Mirrors _build_inference_probmodel's
+    truth-centered-box pattern for image positions, but for y0gw/y1gw.
+
+    Only supports mode in ('EM+GW', 'GW-only') -- source vs image plane is a
+    distinction about how GW image positions are sampled, so it doesn't apply
+    to 'EM-only' (run_inference raises before calling this for that mode).
+    """
+    import jax.numpy as jnp
+    import numpyro
+    import numpyro.distributions as dist
+
+    from .prob_model import ProbModelSourcePlane, ProbModelSourcePlane_GW_only
+    from .lens_setup import setup_differentiable_helens_solver
+
+    priors_user = cfg_full.get("priors", {})
+    priors_user_norm = _normalize_priors_overrides(
+        priors_user, jnp=jnp, numpyro=numpyro, dist=dist,
+    )
+    truth_params = dict(ctx.get("truth_params", {}) or {})
+    n_images = _resolve_gw_n_images(ctx, cfg_full)
+    gw_error_scales = cfg_full["gw"].get("error_scales", {})
+    user_set_gw_error_scales = "error_scales" in cfg_full.get("gw", {})
+
+    # ctx["truth_params"] never carries 'y0gw'/'y1gw' (unlike image_x*/image_y*,
+    # which setup_gw_observation does populate) -- the GW source position only
+    # lives in cfg["gw"]["source_pos"]. Backfill it here so downstream code
+    # (run_inference's Fisher expansion-point lookup, truths_dict, etc.) can find
+    # 'y0gw'/'y1gw' in truth_params like every other sampled parameter.
+    if "y0gw" not in truth_params or "y1gw" not in truth_params:
+        src_pos = cfg_full["gw"].get("source_pos")
+        if src_pos is not None:
+            truth_params.setdefault("y0gw", float(src_pos[0]))
+            truth_params.setdefault("y1gw", float(src_pos[1]))
+
+    # Half-width of the truth-centered y0gw/y1gw prior box, analogous to
+    # cfg["gw"]["image_box_half_width"] on the image-plane side. Override via
+    # cfg["gw"]["source_box_half_width"].
+    src_half_width = float(cfg_full["gw"].get("source_box_half_width", 0.05))
+    y0_truth = float(truth_params.get("y0gw", 0.0))
+    y1_truth = float(truth_params.get("y1gw", 0.0))
+
+    priors_source_pos = {
+        "y0gw": (lambda low=y0_truth - src_half_width, high=y0_truth + src_half_width:
+                 numpyro.sample("y0gw", dist.Uniform(low, high))),
+        "y1gw": (lambda low=y1_truth - src_half_width, high=y1_truth + src_half_width:
+                 numpyro.sample("y1gw", dist.Uniform(low, high))),
+    }
+    priors_combined = {**priors_source_pos, **priors_user_norm}
+
+    use_mst, _ = _resolve_mst_settings(cfg_full, ctx=ctx)
+    if use_mst and "k_mst" not in priors_user_norm:
+        priors_combined["k_mst"] = lambda: numpyro.sample(
+            "k_mst", dist.Uniform(-0.99999, 0.99999)
+        )
+
+    pixel_grid = ctx.get("pixel_grid")
+    if pixel_grid is None:
+        from .data_sim import setup_pixel_grid
+        pg_kwargs = cfg_full.get("em", {}).get("pixel_grid_kwargs", {})
+        pixel_grid = setup_pixel_grid(**pg_kwargs)
+    solver, _, solver_params = setup_differentiable_helens_solver(pixel_grid, ctx["lens_gw"])
+
+    use_layout = bool(cfg_full.get("use_parameter_layout", False))
+    entries = None
+    registry = None
+    priors_flex = None
+
+    if use_layout:
+        from .flex_prob_model import FlexProbModelSourcePlaneEMGW, FlexProbModelSourcePlaneGWOnly
+        from .parameter_layout import (
+            build_mass_parameter_entries,
+            build_parameter_layout,
+            build_priors_registry,
+        )
+
+        if mode == "GW-only":
+            entries = build_mass_parameter_entries(
+                ctx["lens_mass_model"], kwargs_lens=ctx["kwargs_lens"]
+            )
+            registry = build_priors_registry(
+                entries, mass_model=ctx["lens_mass_model"], user_priors=priors_user_norm,
+            )
+            priors_flex = {**registry, **priors_combined}
+            probmodel = FlexProbModelSourcePlaneGWOnly(
+                entries,
+                priors_flex,
+                n_images=n_images,
+                gw_observations=ctx["gw_obs"],
+                lens_gw=ctx["lens_gw"],
+                solver=solver,
+                solver_params=solver_params,
+                gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+                use_mst=use_mst,
+            )
+        else:  # mode == "EM+GW"
+            from .config import DEFAULT_KWARGS_LENS_LIGHT, DEFAULT_KWARGS_SOURCE
+
+            em_local = cfg_full.get("em") or {}
+            kwargs_source = em_local.get("kwargs_source") or DEFAULT_KWARGS_SOURCE
+            kwargs_lens_light = em_local.get("kwargs_lens_light") or DEFAULT_KWARGS_LENS_LIGHT
+            entries, _ = build_parameter_layout(
+                ctx["lens_image"],
+                kwargs_lens=ctx["kwargs_lens"],
+                kwargs_source=kwargs_source,
+                kwargs_lens_light=kwargs_lens_light,
+            )
+            registry = build_priors_registry(
+                entries, lens_image=ctx["lens_image"], user_priors=priors_user_norm,
+            )
+            priors_flex = {**registry, **priors_combined}
+            probmodel = FlexProbModelSourcePlaneEMGW(
+                entries,
+                priors_flex,
+                n_images=n_images,
+                gw_observations=ctx["gw_obs"],
+                em_observations=ctx["em_obs"],
+                lens_image=ctx["lens_image"],
+                lens_gw=ctx["lens_gw"],
+                noise=ctx["noise_inf"],
+                solver=solver,
+                solver_params=solver_params,
+                gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+                use_mst=use_mst,
+            )
+    elif mode == "GW-only":
+        probmodel = ProbModelSourcePlane_GW_only(
+            n_images=n_images,
+            gw_observations=ctx["gw_obs"],
+            lens_gw=ctx["lens_gw"],
+            solver=solver,
+            solver_params=solver_params,
+            priors=priors_combined,
+            gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+            use_mst=use_mst,
+        )
+    else:  # mode == "EM+GW"
+        probmodel = ProbModelSourcePlane(
+            n_images=n_images,
+            gw_observations=ctx["gw_obs"],
+            em_observations=ctx["em_obs"],
+            lens_image=ctx["lens_image"],
+            lens_gw=ctx["lens_gw"],
+            noise=ctx["noise_inf"],
+            solver=solver,
+            solver_params=solver_params,
+            priors=priors_combined,
+            gw_error_scales=(gw_error_scales if user_set_gw_error_scales else None),
+            use_mst=use_mst,
+        )
+
+    return {
+        "probmodel": probmodel,
+        "n_images": n_images,
+        "truth_params": truth_params,
+        "half_width": src_half_width,
+        "use_layout": use_layout,
+        "entries": entries,
+        "registry": registry,
+        "likelihood_seed": int(cfg_full["inference"]["rng_key"]),
+        "priors_flex": priors_flex,
+        "priors_combined": priors_combined,
+        "image_position_priors_override": None,
+    }
+
+
 def _run_nautilus_source_inference(ctx, mode, cfg_full):
     """Dispatch Nautilus source-plane nested sampling."""
     from .nautilus_common import build_em_only_nautilus_problem
@@ -1275,9 +1443,23 @@ def run_inference(
     **``hmc-informed``** — Same full model as ``hmc``, but always ``run_mcmc_informed`` (Fisher mass
     matrix). Plain NUTS on the full model is ``method='hmc'`` only; ``informed=False`` is not valid here.
 
+    **``hmc-source`` / ``hmc-informed-source``** — Source-plane counterparts of ``hmc`` /
+    ``hmc-informed``: full likelihood on ``ProbModelSourcePlane`` / ``ProbModelSourcePlane_GW_only``
+    (samples ``y0gw``/``y1gw`` directly, solves the lens equation inside the model via the
+    differentiable solver), instead of image positions. Same informed/plain semantics as their
+    image-plane counterparts. Not defined for ``mode='EM-only'`` (mirrors ``deriv-approx-source``).
+
     **``nautilus-source``** — Nested sampling with source-plane GW (``y0gw``/``y1gw`` + lens solver).
     **``nautilus-image``** — Nested sampling with image-plane GW (``image_x*``/``image_y*``); EM-only
-    uses the same pixel likelihood as ``nautilus-source``. Sampler settings: ``cfg['nautilus']``.
+    uses the same pixel likelihood as ``nautilus-source``. Sampler settings: ``cfg['nautilus']``
+    (incl. ``prior_check``, default True: checkpointed runs write a prior-fingerprint sidecar
+    ``<filepath>.priors.json`` and refuse ``resume=True`` if the current priors differ from the
+    ones the checkpoint was built with).
+
+    **``fisher-source``** — Source-plane counterpart of ``fisher``: same Fisher-Gaussian-sample
+    early return (``N(u0, inv(-H0))``, no NUTS), but ``H0``/``u0``/``keys_to_include`` come from
+    the source-plane probmodel (``y0gw``/``y1gw``) instead of image positions. Not defined for
+    ``mode='EM-only'`` (mirrors ``deriv-approx-source``).
 
     ``compute_fisher`` always uses the full model to build ``H0`` at the expansion point.
 
@@ -1296,12 +1478,20 @@ def run_inference(
             "or 'nautilus-image' (image-plane GW sampling)."
         )
     if method_norm not in (
-        "deriv-approx", "fisher", "hmc", "hmc-informed",
+        "deriv-approx", "deriv-approx-source", "fisher", "fisher-source", "hmc", "hmc-informed",
+        "hmc-source", "hmc-informed-source",
         "nautilus-source", "nautilus-image",
     ):
         raise ValueError(
-            "method must be one of: 'deriv-approx', 'fisher', 'HMC', 'HMC-informed', "
+            "method must be one of: 'deriv-approx', 'deriv-approx-source', 'fisher', "
+            "'fisher-source', 'HMC', 'HMC-informed', 'hmc-source', 'hmc-informed-source', "
             "'nautilus-source', 'nautilus-image'"
+        )
+    source_plane_methods = ("deriv-approx-source", "hmc-source", "hmc-informed-source", "fisher-source")
+    if method_norm in source_plane_methods and mode == "EM-only":
+        raise ValueError(
+            f"method={method_norm!r} is not defined for mode='EM-only' "
+            "(no GW image positions to parametrize in source vs image plane)."
         )
 
     # Lazy imports inside this function.
@@ -1335,7 +1525,10 @@ def run_inference(
     likelihood_seed = int(cfg_full["inference"]["rng_key"])
 
     priors_user = cfg_full.get("priors", {})
-    built = _build_inference_probmodel(ctx, mode, cfg_full)
+    if method_norm in source_plane_methods:
+        built = _build_inference_probmodel_source_plane(ctx, mode, cfg_full)
+    else:
+        built = _build_inference_probmodel(ctx, mode, cfg_full)
     probmodel = built["probmodel"]
     likelihood_seed = built["likelihood_seed"]
     truth_params = built["truth_params"]
@@ -1502,7 +1695,7 @@ def run_inference(
     # Fisher-only: sample from Gaussian N(u0, cov)
     priors_for_fisher = priors_flex if priors_flex is not None else priors_combined
 
-    if method_norm == "fisher":
+    if method_norm in ("fisher", "fisher-source"):
         FM = -H0
         try:
             cov = jnp.linalg.inv(FM)
@@ -1553,7 +1746,7 @@ def run_inference(
     if h0_override is not None:
         H0_for_mcmc = jnp.asarray(h0_override, dtype=jnp.float64)
 
-    if method_norm == "deriv-approx":
+    if method_norm in ("deriv-approx", "deriv-approx-source"):
         mcmc_model = fisher_prob_model.model
     else:
         # ``hmc`` / ``hmc-informed``: full likelihood (not the banana model).
@@ -1562,16 +1755,16 @@ def run_inference(
     inf_cfg = cfg_full["inference"]
     informed_override = inf_cfg.get("informed")
 
-    if method_norm == "hmc-informed":
+    if method_norm in ("hmc-informed", "hmc-informed-source"):
         if informed_override is False:
             raise ValueError(
-                "method='hmc-informed' always uses Hessian-informed NUTS. "
-                "Use method='hmc' for plain NUTS on the full model."
+                f"method={method_norm!r} always uses Hessian-informed NUTS. "
+                "Use method='hmc'/'hmc-source' for plain NUTS on the full model."
             )
         use_informed_mcmc = True
-    elif method_norm == "hmc":
+    elif method_norm in ("hmc", "hmc-source"):
         use_informed_mcmc = informed_override is True
-    elif method_norm == "deriv-approx":
+    elif method_norm in ("deriv-approx", "deriv-approx-source"):
         use_informed_mcmc = informed_override is True
     else:
         use_informed_mcmc = False

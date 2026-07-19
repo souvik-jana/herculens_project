@@ -1,0 +1,284 @@
+\documentclass[10pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{subcaption}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.2ex}{0.6ex}
+\titlespacing*{\subsection}{0pt}{0.9ex}{0.4ex}
+\setlength{\parskip}{0.4ex}
+\setlength{\parindent}{0pt}
+\graphicspath{{figures/}}
+
+\title{\vspace{-2.5em}Strong-lens parameter inference: EM-only, GW-only, and EM+GW\\
+\large A cross-method comparison on a common mock}
+\author{}
+\date{\today}
+
+\begin{document}
+\maketitle
+\vspace{-3em}
+
+\section{System and simulation}
+All three cases fit the \emph{same} mock lens (\texttt{shared/system\_config.py}, seed 87651):
+an EPL+SHEAR deflector ($\theta_E=1.2''$, $e_1=0$, $e_2=0.1$, $\gamma=2$, shear $\gamma_1=0.1$,
+$\gamma_2=0$) with a S\'ersic source at $(0.2,-0.05)''$ and a S\'ersic lens light, imaged on a
+$40\times40$ grid at $0.1''$/px, Gaussian PSF (FWHM $0.067''$), background rms $10^{-2}$,
+$t_{\rm exp}=2200$\,s. Peak SNR $\approx290$. The GW sector adds four lensed images with observables
+= relative time delays (3) + effective luminosity distances (4); truth $T_\star=1.479\times10^7$\,s,
+$d_L=11214$\,Mpc.
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}{0.24\textwidth}\includegraphics[width=\linewidth]{sim_em_data}\caption{EM data}\end{subfigure}
+\hfill
+\begin{subfigure}{0.24\textwidth}\includegraphics[width=\linewidth]{sim_gw_system}\caption{System + GW images}\end{subfigure}
+\hfill
+\begin{subfigure}{0.24\textwidth}\includegraphics[width=\linewidth]{noise_map}\caption{Noise map}\end{subfigure}
+\hfill
+\begin{subfigure}{0.24\textwidth}\includegraphics[width=\linewidth]{snr_map}\caption{SNR map}\end{subfigure}
+\caption{Simulated observation. (a) noisy EM image; (b) clean+noisy image with the 4 GW image
+positions ($\times$); (c) per-pixel noise; (d) per-pixel SNR (peak $\approx290$).}
+\end{figure}
+
+\textbf{Measurement-error regimes (GW sector).} Two settings are compared for the GW cases:
+\emph{large-error} ($\sigma_{t_d}=5\%$, $\sigma_{d_L^{\rm eff}}=300\%$) and \emph{precise}
+($\sigma_{t_d}=0.1\%$, $\sigma_{d_L^{\rm eff}}=5\%$). The simulated observables are identical;
+only the assumed uncertainties (posterior widths) change. EM-only is unaffected.
+
+\section{Case 1 --- EM-only}
+\textbf{Free (11):} $\theta_E, e_1, e_2, \gamma, \gamma_1, \gamma_2$ and source
+$A, R_{\rm S}, n, e_1, e_2$. \textbf{Fixed to truth:} lens + source centres, shear origin, full
+lens-light profile, background noise. \textbf{Methods:} gwemfish deriv-approx (informed NUTS on a
+Taylor model) and fisher (Taylor--Gaussian at truth); PyAutoLens Nautilus; lenstronomy Nautilus.
+Priors: gwemfish/PAL use their native broad priors, lenstronomy uses truth $\pm10\sigma_{\rm Fisher}$
+boxes; at SNR$\sim$290 the fit is data-dominated (verified by overlap).
+
+\textbf{Result.} All four frameworks agree on every parameter to $\lesssim0.2\sigma$ in the means,
+with widths matching to a few percent (Table~\ref{tab:c1}). The only outlier is source
+amplitude/radius ($\sim$1$\sigma$, $\sim$0.2\%): the irreducible S\'ersic $b_n$-convention
+difference (PAL Ciotti--Bertin vs.\ HCL/lenstronomy). Common $\sim$1--2$\sigma$ pulls
+($\theta_E\,{-}1.2$, $n\,{+}2.1$) are the shared noise realization, not bias --- the truth-centred
+Fisher posterior has identical widths.
+
+\begin{table}[h]\centering\footnotesize
+\caption{Case 1, representative parameters (mean\,$\pm$\,std; pull $=$ (mean$-$truth)/std).}
+\label{tab:c1}
+\begin{tabular}{lcccc}
+\toprule
+param (truth) & gwemfish deriv & gwemfish fisher & PyAutoLens & lenstronomy \\
+\midrule
+$\theta_E$ (1.2) & $1.1998\pm1.6\text{e-}4$ ($-1.2$) & $1.2000\pm1.6\text{e-}4$ ($0.0$) & $1.1998\pm1.6\text{e-}4$ ($-1.2$) & $1.1998\pm1.6\text{e-}4$ ($-1.2$)\\
+$\gamma$ (2.0) & $2.0005\pm5.2\text{e-}4$ ($+0.9$) & $2.0000\pm5.4\text{e-}4$ ($0.0$) & $2.0004\pm5.4\text{e-}4$ ($+0.8$) & $2.0004\pm5.4\text{e-}4$ ($+0.8$)\\
+$e_2$ (0.1) & $0.1000\pm3.8\text{e-}4$ ($-0.1$) & $0.1000\pm3.7\text{e-}4$ ($0.0$) & $0.1000\pm3.7\text{e-}4$ ($-0.1$) & $0.1000\pm3.8\text{e-}4$ ($0.0$)\\
+$n_{\rm src}$ (1.5) & $1.5044\pm2.0\text{e-}3$ ($+2.2$) & $1.5000\pm2.0\text{e-}3$ ($0.0$) & $1.5039\pm2.0\text{e-}3$ ($+2.0$) & $1.5041\pm2.0\text{e-}3$ ($+2.1$)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}{0.49\textwidth}\includegraphics[width=\linewidth]{case1_corner_mass}\caption{lens mass}\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\textwidth}\includegraphics[width=\linewidth]{case1_corner_source}\caption{source light}\end{subfigure}
+\caption{Case 1 EM-only: four-way comparison corners. Contours overlap to $\lesssim0.2\sigma$.}
+\end{figure}
+
+\section{Case 2 --- GW-only}
+\textbf{Free (4):} $e_2, \gamma, y_0^{\rm gw}, y_1^{\rm gw}$ (source position). \textbf{Fixed to
+truth:} $\theta_E, e_1$, lens centre, all shear, $T_\star, d_L$. Constraint = time delays
+($d_L^{\rm eff}$ nearly uninformative in large-error). \textbf{Methods:} fisher-source,
+deriv-approx-source, nautilus-source (helens solver), and nautilus with a lenstronomy solver
+(same GW likelihood, different lens-equation solver --- a cross-check).
+\textbf{Priors (Uniform):} NUTS boxes $e_2\in(-0.5,0.5)$, $\gamma\in(1.5,2.5)$,
+$y_0\in(0.1,0.3)$, $y_1\in(-0.13,0.03)$; nautilus uses truth\,$\pm3\sigma_{\rm Fisher}$ clipped to
+these (tight in precise, NUTS-dominated in large-error).
+
+\textbf{Result.} Every method is consistent with truth (all $|{\rm pull}|\le0.7$). Precise data
+tighten the posteriors $\sim$5--40$\times$ (Table~\ref{tab:c2}) and \emph{resolve the $y_1^{\rm gw}$
+bimodality} seen in large-error (Fig.~\ref{fig:c2}). Fisher-source flips from a poor,
+$\sim$10$\times$-too-wide approximation (near-singular FM, cond $1.9\times10^9$) to an excellent one.
+The two solvers agree to $\sim$$10^{-8}$ nats except on a $\sim$5--10\% caustic-boundary sliver each
+truncates differently ($\le0.4\sigma$ mean shifts).
+
+\begin{table}[h]\centering\footnotesize
+\caption{Case 2 GW-only, posterior std (nautilus + lenstronomy solver); all means at truth.}
+\label{tab:c2}
+\begin{tabular}{lccc}
+\toprule
+param & large-error std & precise std & tighter \\
+\midrule
+$e_2$          & 0.029  & 0.0032 & $\sim9\times$ \\
+$\gamma$       & 0.216  & 0.047  & $\sim5\times$ \\
+$y_0^{\rm gw}$ & 0.0097 & 0.0011 & $\sim9\times$ \\
+$y_1^{\rm gw}$ & 0.0186 & 0.0005 & $\sim40\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}{0.49\textwidth}\includegraphics[width=\linewidth]{case2_large}\caption{large-error}\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\textwidth}\includegraphics[width=\linewidth]{case2_precise}\caption{precise}\end{subfigure}
+\caption{Case 2 GW-only comparison corners. Precise data collapse the widths and remove the
+secondary $y_1^{\rm gw}$ mode near $-0.08$ visible at large error.}
+\label{fig:c2}
+\end{figure}
+
+\section{Case 2f --- GW-only with $T_\star,d_L$ free: a degeneracy and its resolution}
+
+\textbf{Motivation.} Case 2 fixes $T_\star$ (time-delay distance) and $d_L$ (luminosity
+distance) to truth. Freeing them --- \textbf{free (6):} $e_2,\gamma,y_0^{\rm gw},y_1^{\rm gw},
+T_\star,d_L$ --- tests whether GW-only data can measure the distance/time-delay normalisation
+on their own, the quantity time-delay cosmography ultimately wants. \textbf{Methods:}
+fisher-source, deriv-approx-source (regularized informed NUTS, required once $T_\star,d_L$ open
+a near-flat direction), nautilus-source (helens solver), nautilus + lenstronomy solver.
+\textbf{Priors:} Uniform truth$\pm50\%$ on $T_\star,d_L$; nautilus boxes from the fisher sigmas
+(truth$\pm3\sigma$, clipped), as in Case 2.
+
+\textbf{The degeneracy.} Freeing $T_\star,d_L$ opens two near-flat Fisher directions:
+$\mathrm{corr}(d_L,\gamma)=-0.999$, $\mathrm{corr}(T_\star,y_1^{\rm gw})=+0.998$,
+$\mathrm{corr}(T_\star,d_L)=-0.97$, with two unit-normalised Fisher eigenvalues at
+$3.7\times10^{-11}$ and $1.1\times10^{-9}$ (verified real rather than inversion noise: sigmas
+from the unit-normalised inversion match the fisher-meta sigmas to 4 decimal places).
+Physically, $d_L^{\rm eff}=d_L/\sqrt{\mu}$ ties $d_L$ to the magnification, and time delays fix
+only the Fermat-potential scale up to the $T_\star$ normalisation --- GW observables alone
+under-determine which combination of $T_\star,d_L,\gamma$ produced the data.
+
+\textbf{Precise regime ($\sigma_{t_d}=0.1\%,\sigma_{d_L^{\rm eff}}=5\%$): biased along the
+ridge.} The two exact-likelihood samplers (helens and lenstronomy solvers) agree with each
+other (means within $\sim0.5\sigma$) but both sit 1.3--3.1$\sigma$ down-ridge of truth
+(Fig.~\ref{fig:c2f}a) --- a coherent shift along the degenerate direction, not a solver or
+sampler bug (all six pulls move together with the correlation signs above). deriv-approx-source,
+a Taylor surrogate centred at truth, stays truth-centred by construction and is the
+local-curvature answer, not the full-posterior one.
+
+\textbf{scan\_opt regime ($\sigma_{t_d}=1\%,\sigma_{d_L^{\rm eff}}=0.5\%$): resolved by
+re-allocating error, not by shrinking it.} Because $d_L^{\rm eff}$, not $t_d$, carries the
+distance normalisation, trading back 10$\times$ on time-delay precision to buy 10$\times$ on
+$d_L^{\rm eff}$ collapses the ridge: every one of the 24 pulls across all four methods satisfies
+$|p|\le0.62$ (Fig.~\ref{fig:c2f}b); $d_L$ is measured to $\sim$8--9\%, $T_\star$ to $\sim$4--5\%,
+$\gamma$ to $\sim$10\%, source position to $\sim$2\%. This operating point was located in
+advance with a Fisher error-requirement scan; its analytic $J^\top C^{-1}J$ prediction matches
+the pipeline's measured Hessian sigmas to five decimal places at the chosen budget, confirming
+the scan and the sampler compute the same object. fisher-source also becomes informative rather
+than a correlation-only source: $\mathrm{cond}({\rm FM})$ improves from $\sim10^{26}$-class
+degeneracy (precise) to $6.5\times10^{22}$ (scan\_opt).
+
+\begin{table}[h]\centering\footnotesize
+\caption{Case 2f, nautilus-helens: same total measurement effort, different
+$\sigma_{t_d}$/$\sigma_{d_L^{\rm eff}}$ split. Re-allocating error removes the bias.}
+\label{tab:c2f}
+\begin{tabular}{lcccc}
+\toprule
+param (truth) & precise pull & scan\_opt pull & scan\_opt std \\
+\midrule
+$e_2$ (0.1) & $+2.4\sigma$ & $+0.03\sigma$ & 0.0103 \\
+$\gamma$ (2.0) & $+1.7\sigma$ & $+0.50\sigma$ & 0.193 \\
+$y_0^{\rm gw}$ (0.2) & $+2.1\sigma$ & $-0.45\sigma$ & 0.0047 \\
+$y_1^{\rm gw}$ ($-0.05$) & $-2.0\sigma$ & $+0.62\sigma$ & 0.0076 \\
+$T_\star$ ($1.479\times10^7$\,s) & $-2.1\sigma$ & $+0.49\sigma$ & $5.97\times10^5$\,s \\
+$d_L$ (11214\,Mpc) & $-3.1\sigma$ & $-0.25\sigma$ & 1038\,Mpc \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}{0.49\textwidth}\includegraphics[width=\linewidth]{case2f_precise_ridge}\caption{precise: degenerate ridge, 1.3--3.1$\sigma$ off truth}\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\textwidth}\includegraphics[width=\linewidth]{case2f_scanopt_resolved}\caption{scan\_opt: ridge resolved, all $|p|\le0.62$}\end{subfigure}
+\caption{Case 2f, full six-parameter corner ($e_2,\gamma,y_0^{\rm gw},y_1^{\rm gw},T_\star,d_L$),
+three methods overlaid (red deriv-approx-source, orange nautilus-helens, blue
+nautilus+lenstronomy), truth crosshairs dashed red. Re-allocating the same total measurement
+effort from time-delay to $d_L^{\rm eff}$ precision collapses the $T_\star$--$d_L$--$\gamma$
+degeneracy without adding data.}
+\label{fig:c2f}
+\end{figure}
+
+\textbf{Caveats.} nautilus-helens has the fewest effective samples of the two exact solvers at
+scan\_opt ($n_{\rm eff}=302$ vs 3023 for lenstronomy); its $\sim$0.5$\sigma$ residual pulls on
+$\gamma,y_1^{\rm gw},T_\star$ are consistent with that sampling noise, not bias. $\gamma$ remains
+largely prior-dominated at scan\_opt (GW-only constrains the $\gamma$--$d_L$ combination, not
+$\gamma$ alone). The $T_\star$--$d_L$ ridge itself is not removed by scan\_opt, only bounded:
+all three sampled methods still trace the same anti-correlated band, now centred on truth. This
+degeneracy is exactly what Case 3 (EM+GW) breaks by an independent route --- pinning the
+mass/source model with EM data rather than re-balancing GW error budgets.
+
+\section{Case 3 --- EM+GW}
+\textbf{Free (27):} full joint EM pixel model + GW sector ($T_\star, d_L, y_0^{\rm gw}, y_1^{\rm gw}$).
+\textbf{Fixed to truth:} shear origin only. \textbf{Methods:} fisher-source, deriv-approx-source,
+nautilus-source (helens). \textbf{Priors:} lens-light centroid $\mathcal{N}(0,0.05)$,
+$y_0/y_1\sim$ Uniform truth$\pm0.05$, rest free per parameter layout; nautilus boxes truth
+$\pm5\sigma_{\rm Fisher}$. (nautilus ties the GW source to the EM source centre, so its $y_0/y_1$
+column carries the EM astrometric constraint.)
+
+\textbf{Result.} The EM likelihood already pins the mass and source-position parameters, so
+precise GW data change them negligibly; what they transform is the \emph{GW-only sector}
+(Table~\ref{tab:c3}): $d_L$ goes from effectively unconstrained ($\pm11800$, $\sim$70\%) to
+$\pm288$\,Mpc ($\sim$2.6\%), and $T_\star$ tightens $\sim$11$\times$. fisher and nautilus recover
+truth (nautilus $|{\rm pull}|\le1.2$; large pulls are std-amplification, not bias --- absolute
+accuracy is sub-mas). \emph{Caveat:} deriv-approx (banana surrogate) mixes poorly on the sharp
+precise 27-D posterior (worst $\hat R\approx1.9$); treat its contour as indicative --- fisher and
+nautilus are the reliable methods here.
+
+\begin{table}[h]\centering\footnotesize
+\caption{Case 3 EM+GW, nautilus-source std: where precise GW data help.}
+\label{tab:c3}
+\begin{tabular}{lccc}
+\toprule
+param & large-error std & precise std & tighter \\
+\midrule
+$d_L$ (Mpc)    & 11800 (unconstr.) & 288    & $\sim40\times$ \\
+$T_\star$ (s)  & $4.9\times10^5$   & $4.6\times10^4$ & $\sim11\times$ \\
+$\gamma$       & 0.0030 & 0.0028 & $\sim1\times$ \\
+$y_1^{\rm gw}$ & 0.00020 & 0.00019 & $\sim1\times$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}{0.49\textwidth}\includegraphics[width=\linewidth]{case3_large}\caption{large-error}\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\textwidth}\includegraphics[width=\linewidth]{case3_precise}\caption{precise}\end{subfigure}
+\caption{Case 3 EM+GW comparison corners (main parameters). Mass/source params are EM-dominated
+and stable; the visible tightening is in the GW sector ($d_L, T_\star$).}
+\end{figure}
+
+\section{Conclusion}
+On a common mock, independent codes and inference methods agree:
+(i) \textbf{EM-only} --- gwemfish, PyAutoLens and lenstronomy recover truth to $\lesssim0.2\sigma$,
+the only residual being the known S\'ersic $b_n$-convention offset;
+(ii) \textbf{GW-only} --- all methods are truth-consistent; precise timing shrinks the posterior
+$\sim$5--40$\times$ and resolves the $y_1^{\rm gw}$ bimodality, and Fisher becomes an accurate
+surrogate;
+(iii) \textbf{GW-only, $T_\star,d_L$ free} --- freeing the distance/time-delay normalisation opens
+a near-perfect $T_\star$--$d_L$--$\gamma$ degeneracy (correlations $\ge0.97$) that biases every
+method coherently by 1.3--3.1$\sigma$ under a time-delay-optimised error budget; re-allocating the
+same total measurement effort toward $d_L^{\rm eff}$ precision (found in advance with a Fisher
+error-requirement scan) collapses all 24 pulls to $|p|\le0.62$ and yields $d_L$ to $\sim$8--9\%,
+$T_\star$ to $\sim$4--5\%, with zero extra data --- the key lesson being that \emph{how} error
+budget is spent matters as much as its total size, and a tight posterior is not necessarily a
+correct one;
+(iv) \textbf{EM+GW} --- EM fixes the lens/source, so precise GW data act almost entirely on the
+GW-only sector, turning $d_L$ from unconstrained into a $\sim$2.6\% measurement --- an independent
+route to breaking the same $T_\star$--$d_L$--$\gamma$ degeneracy that (iii) resolves by GW error
+re-allocation alone.
+Cross-checks hold throughout (independent solvers agree to $\sim$$10^{-8}$ nats; vectorized vs.\
+scalar likelihoods to $\sim$$10^{-11}$; analytic Fisher predictions match measured Hessian sigmas
+to 5 decimal places). The one method-level caveat is deriv-approx-source, whose banana-surrogate
+NUTS mixes poorly once a posterior becomes very sharp or opens a near-flat direction without
+regularization --- fisher-source and nautilus-source remain reliable across all regimes tested.
+
+This concludes the current phase of the comparison analysis: EM-only, GW-only (fixed and free
+$T_\star,d_L$, three error regimes), and EM+GW are all cross-validated across gwemfish, PyAutoLens
+and lenstronomy on one common mock, with every run's samples, priors and configuration saved for
+exact reproduction (see \texttt{comparison-analysis/*/results*.md} and \texttt{handoff.md}).
+Open follow-ups (not required for this conclusion) are recorded in
+\texttt{comparison-analysis/handoff.md}: a mac-environment (herculens 0.3.x) rerun to confirm
+absolute numbers, and a Case 3 nautilus-source variant with a freed GW source position.
+\end{document}

@@ -3,7 +3,12 @@ GWEMFISH: Gravitational Wave + Electromagnetic Fisher Information
 Joint parameter estimation pipeline for strongly lensed GW+EM systems.
 """
 
-from .lens_setup import setup_lens, setup_helens_solver, remove_central_image
+from .lens_setup import (
+    setup_lens,
+    setup_helens_solver,
+    setup_differentiable_helens_solver,
+    remove_central_image,
+)
 from .jax_config import setup_jax
 from .data_sim import (
     setup_pixel_grid,
@@ -14,7 +19,14 @@ from .data_sim import (
     compute_gw_from_images
 )
 # from .prob_model_PL import ProbModel, ProbModelSourcePlane, ProbModelFisher, ProbModel_EM_GW
-from .prob_model import ProbModel, ProbModelSourcePlane, ProbModelFisher, ProbModel_EM_only
+from .prob_model import (
+    ProbModel,
+    ProbModelSourcePlane,
+    ProbModelSourcePlane_GW_only,
+    ProbModelFisher,
+    ProbModel_EM_only,
+)
+from .differentiable_solver import DifferentiableLensEquationSolver
 from .profile_prior_rules import required_default_sampler
 from .parameter_layout import (
     build_mass_parameter_entries,
@@ -25,7 +37,13 @@ from .parameter_layout import (
     make_infer_array_shape,
     truth_vector_from_kwargs,
 )
-from .flex_prob_model import FlexProbModelEMGW, FlexProbModelEMOnly, FlexProbModelGWOnly
+from .flex_prob_model import (
+    FlexProbModelEMGW,
+    FlexProbModelEMOnly,
+    FlexProbModelGWOnly,
+    FlexProbModelSourcePlaneEMGW,
+    FlexProbModelSourcePlaneGWOnly,
+)
 from .inference import run_mcmc
 from .nautilus_common import run_nautilus, build_em_only_nautilus_problem
 from .nautilus_source_inference import (
@@ -89,8 +107,11 @@ __all__ = [
     'compute_gw_from_images',
     'ProbModel',
     'ProbModelSourcePlane',
+    'ProbModelSourcePlane_GW_only',
     'ProbModelFisher',
     'setup_helens_solver',
+    'setup_differentiable_helens_solver',
+    'DifferentiableLensEquationSolver',
     'remove_central_image',
     'setup_jax',
     'run_mcmc',
@@ -153,5 +174,7 @@ __all__ = [
     'FlexProbModelEMGW',
     'FlexProbModelEMOnly',
     'FlexProbModelGWOnly',
+    'FlexProbModelSourcePlaneEMGW',
+    'FlexProbModelSourcePlaneGWOnly',
 ]
 

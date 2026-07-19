@@ -9,6 +9,7 @@ import jax.numpy as jnp
 from jaxtronomy.LensModel.lens_model import LensModel
 from jaxtronomy.LensModel.Solver.lens_equation_solver import LensEquationSolver
 from herculens.MassModel.mass_model import MassModel
+from .differentiable_solver import DifferentiableLensEquationSolver
 from .config import (
     HELEN_LENS_SOLVER_PARAM_KEYS,
     IMAGE_POSITION_SOLVER_DEFAULTS,
@@ -330,6 +331,49 @@ def setup_helens_solver(pixel_grid, lens_gw, pixel_scale_factor=0.8, solver_para
     
     # Initialize helens solver with ray_shoot function
     solver = LensEquationSolver_helens(solver_grid_x, solver_grid_y, lens_gw.ray_shoot)
-    
+
+    return solver, solver_pixel_grid, solver_params
+
+
+def setup_differentiable_helens_solver(pixel_grid, lens_gw, pixel_scale_factor=0.8,
+                                        solver_params=None, n_newton=8):
+    """Like setup_helens_solver, but returns a DifferentiableLensEquationSolver
+    so gradients (jax.grad/jax.hessian) through .solve() are correct.
+
+    Required for method='deriv-approx-source': ProbModelSourcePlane* calls
+    solver.solve(...) *inside* the numpyro model, and compute_fisher then
+    differentiates the whole model w.r.t. y0gw/y1gw. The raw helens solver
+    (setup_helens_solver) gives exact-zero gradients there -- confirmed in
+    helens/investigations/inv3_fisher_vs_nautilus (Fisher covariance -> NaN).
+    Do not use setup_helens_solver's output for gradient-based inference.
+
+    Args:
+        pixel_grid: hcl.PixelGrid instance (main observation grid).
+        lens_gw: LensImageGW instance with a JAX-differentiable ray_shoot method.
+        pixel_scale_factor: Factor to create coarser solver grid (default 0.8).
+        solver_params: Optional solver parameters dict. If None, uses SOLVER_PARAMS.
+        n_newton: Number of Newton-polish steps per image (default 8, matches
+            the validated prototype in helens/investigations/inv2_solver_math).
+
+    Returns:
+        solver: DifferentiableLensEquationSolver instance.
+        solver_pixel_grid: Coarser pixel grid for solver.
+        solver_params: Solver parameters dict.
+    """
+    if not HELENS_AVAILABLE:
+        raise ImportError("helens package is required for source plane inference. "
+                         "Install it with: pip install helens")
+
+    if solver_params is None:
+        solver_params = SOLVER_PARAMS.copy()
+
+    # Create coarser solver grid (same convention as setup_helens_solver)
+    solver_pixel_grid = pixel_grid.create_model_grid(pixel_scale_factor=pixel_scale_factor)
+    solver_grid_x = solver_pixel_grid.pixel_coordinates[0]
+    solver_grid_y = solver_pixel_grid.pixel_coordinates[1]
+
+    solver = DifferentiableLensEquationSolver(
+        solver_grid_x, solver_grid_y, lens_gw.ray_shoot, n_newton=n_newton)
+
     return solver, solver_pixel_grid, solver_params
 

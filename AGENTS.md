@@ -28,7 +28,8 @@ Read the closest script before inventing patterns:
 | EM-only nautilus vs deriv-approx vs fisher | `examples/scripts/em_nautilus.py` |
 | GW-only nautilus (source-plane) | `examples/scripts/gw_only_nautilus.py` |
 | GW-only nautilus (image-plane) | `examples/scripts/gw_only_nautilus_image.py` |
-| Full cfg template | `examples/scripts/cfg.py` + `SIMPLE_PIPELINE_CONFIG.md` |
+| Full cfg template (canonical) | `scripts/cfg.py` — every key, every mode/method, `use_parameter_layout` on/off examples |
+| Full cfg template (older, narrower) | `examples/scripts/cfg.py` + `SIMPLE_PIPELINE_CONFIG.md` |
 | ctx inspection | `examples/notebooks/simple_pipeline_demonstration.ipynb` |
 
 ## Inference quick reference
@@ -45,10 +46,15 @@ Read the closest script before inventing patterns:
 | `deriv-approx` | Taylor model + NUTS; set `inference.informed` |
 | `hmc` | Full model NUTS |
 | `hmc-informed` | Always informed NUTS |
+| `deriv-approx-source` | Source-plane (`y0gw`/`y1gw`) counterpart of `deriv-approx`; not valid for `mode='EM-only'` |
+| `hmc-source` | Source-plane counterpart of `hmc`; not valid for `mode='EM-only'` |
+| `hmc-informed-source` | Source-plane counterpart of `hmc-informed`; not valid for `mode='EM-only'` |
 | `nautilus-source` | Source-plane GW nested sampling |
 | `nautilus-image` | Image-plane GW nested sampling (EM-only same as source) |
 
 Set `ctx["cfg"]["priors"]` before `run_inference`. Float = fixed; numpyro `Distribution` = sampled.
+
+`cfg["use_parameter_layout"]` (default `False`): switches flat names from legacy single-lens (`lens_theta_E`, ...) to auto-generated `lens0_*`/`lens1_*`/... (one block per mass profile), `source0_*`, `light0_*`. Works for every method above except it's *required* (not optional) for `EM-only` + `nautilus-source`/`nautilus-image`. See `gwemfish-infer` skill.
 
 ## Batch multi-sim studies
 

@@ -10,7 +10,7 @@ Read `gwemfish-local` (`~/.cursor/skills/gwemfish-local/`) for `LENS_RECONSTRUCT
 ## Workflow
 
 1. **JAX env** — set `XLA_FLAGS`, `jax_enable_x64`, `jax_platform_name="cpu"` before `import jax`.
-2. **cfg** — `CFG = make_default_cfg()` then override; or `examples/scripts/cfg.py` `get_cfg()`. Set `use_parameter_layout: True` when examples use flex names (`lens0_*`).
+2. **cfg** — `CFG = make_default_cfg()` then override; or `from gwemfish.cfg_reference import get_cfg` (canonical: `src/gwemfish/cfg_reference.py`; `scripts/cfg.py`/`examples/scripts/cfg.py` are symlinks to it). Set `use_parameter_layout: True` when examples use flex names (`lens0_*`).
 3. **EM** — `ctx = setup_em_observation(cfg=CFG)`. Skip if `CFG["em"]["enabled"] = False` (GW-only).
 4. **GW** — `ctx = setup_gw_observation(ctx, cfg=ctx["cfg"])` unless `gw.enabled` is false.
 5. **Optional** — `ctx = prune_gw_images(ctx, n_keep=...)`; `plot_system_observation(ctx, cfg)`.
