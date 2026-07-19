@@ -45,3 +45,8 @@ Thumbs.db
 *.hdf5
 Diagnosis/
 handoff.md
+
+# comparison-analysis only: track report PDF (plots live in the report)
+!comparison-analysis/report/
+!comparison-analysis/report/**/
+!comparison-analysis/report/**/*.pdf

@@ -1,0 +1,153 @@
+---
+description: Python coding style — keep code simple and readable
+alwaysApply: true
+---
+
+# Python Style
+
+Write simple, readable Python. Avoid anything that adds visual noise without adding meaning.
+
+## No type annotations
+
+```python
+# bad
+def save_json(data: dict, path: str) -> None:
+    ...
+
+def build_cfg(base: dict, sim: dict) -> dict:
+    ...
+
+rows: list[dict] = []
+samples_by_method: dict[str, dict] = {}
+
+# good
+def save_json(data, path):
+    ...
+
+def build_cfg(base, sim):
+    ...
+
+rows = []
+samples_by_method = {}
+```
+
+- No parameter type hints
+- No return type hints (`-> None`, `-> dict`, `-> tuple[...]`)
+- No inline variable type hints
+- No `from __future__ import annotations`
+- No generic expressions like `tuple[dict, dict]` or `dict[str, list]`
+
+## No main() boilerplate
+
+```python
+# bad
+def main():
+    ...
+
+if __name__ == "__main__":
+    main()
+
+# good — just write the script logic at the top level
+args = p.parse_args()
+...
+```
+
+Scripts are run directly, not imported. Put helper functions at the top, then the script body at module level — no `main()` wrapper, no `if __name__ == "__main__"` guard.
+
+## No unnecessary nested functions
+
+```python
+# bad
+def save_json(data, path):
+    def _serial(obj):
+        ...
+    def _walk(o):
+        return _serial(o)
+    json.dump(_walk(data), f)
+
+# good
+def to_serializable(obj):
+    ...
+
+def save_json(data, path):
+    json.dump(to_serializable(data), f)
+```
+
+Keep helpers at module level, not nested inside other functions.
+
+## No underscore prefix on helpers
+
+The `_name` convention marks a function as private/internal to a module — it is meaningless in standalone scripts that are never imported. Use plain names for all helpers.
+
+```python
+# bad
+def _save_json(data, path): ...
+def _build_cfg(base, sim): ...
+
+# good
+def save_json(data, path): ...
+def build_cfg(base, sim): ...
+```
+
+## No environment-conditional imports
+
+Do not wrap imports or setup in `try/except ImportError` to detect Colab, Jupyter, GPU, etc. Do not inline `pip install` in notebooks or scripts. Assume dependencies are installed (uv / project env) and import directly.
+
+```python
+# bad
+try:
+    import google.colab
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "autoconf"])
+except ImportError:
+    pass
+
+from autoconf import setup_colab
+
+# good
+from autoconf import setup_colab
+
+setup_colab.for_autolens()
+```
+
+## Use library APIs first
+
+Use the stack you're in — stdlib first, then that package's public API. No hand-rolled plots, conversions, solvers, or ray-tracing when the library already ships them.
+
+- **PyAutoLens:** `aplt`, `al.convert`, `PointSolver`, `LensCalc`, `SimulatorImaging`
+- **Herculens / gwemfish:** `MassModel`, `LensImage`, `lensimage_gw`, `lens_setup`
+- **lenstronomy / jaxtronomy:** `LensModel`, `LensEquationSolver.image_position_from_source`
+
+New helper only if nothing covers it; shared glue (e.g. cross-framework param maps) → one project module, not per notebook.
+
+```python
+# bad — roll your own
+q = (1 - math.sqrt(e1**2 + e2**2)) / (1 + math.sqrt(e1**2 + e2**2))
+
+# good — PyAutoLens
+q, phi = al.convert.axis_ratio_and_angle_from(ell_comps=(e2, e1))
+```
+
+## Matplotlib: SciencePlots
+
+Custom matplotlib figures → `scienceplots` when available. Skip when a domain plotter already owns the figure (e.g. `aplt`).
+
+```python
+import matplotlib.pyplot as plt
+import scienceplots
+
+plt.style.use(["science", "ieee", "high-vis"])
+plt.rcParams["text.usetex"] = False
+```
+
+## No redundant comments
+
+```python
+# bad
+# Load the config file
+config = load_yaml(path)
+
+# good
+config = load_yaml(path)
+```
+
+Only comment when the *why* is not obvious from the code itself.

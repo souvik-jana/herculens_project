@@ -15,7 +15,7 @@ OUTPUT_DIR = os.path.join(REPO_ROOT, "examples/outputs/outputs_gw_only_nautilus"
 # Method toggles — only blocks with True are executed and included in comparison plots.
 RUN_DERIV_APPROX = False
 RUN_DERIV_APPROX_SOURCE = True
-RUN_FISHER_SOURCE = False
+RUN_FISHER_SOURCE = True
 RUN_NAUTILUS_SOURCE = True
 RUN_FISHER = False
 RUN_HMC_INFORMED_SOURCE = False
@@ -27,13 +27,13 @@ LOAD_HMC_INFORMED_SOURCE_SAMPLES = False  # True → load npz, skip run_inferenc
 # HMC NUTS smoke settings (hmc-source / hmc-informed-source only; deriv-approx uses BASE_CFG)
 HMC_NUM_WARMUP = 15000
 HMC_NUM_SAMPLES = 5000
-HMC_NUM_CHAINS = 5
+HMC_NUM_CHAINS = 3
 
 # Nautilus checkpoint: resume=True continues a run with the *same* priors.
 # First run after changing NAUTILUS_SIGMA_SPAN, free params, or manual priors → False.
 # Re-run with unchanged span/setup → True (fisher-source rebuilds the same H0 boxes).
 NAUTILUS_CHECKPOINT = os.path.join(OUTPUT_DIR, "nautilus_checkpoint.hdf5")
-NAUTILUS_RESUME = True
+NAUTILUS_RESUME = False
 NAUTILUS_SIGMA_SPAN = 2.0  # Fisher H0 span for nautilus-source priors (after fisher-source)
 
 IMAGE_PLANE_CORNER_PATH  = "image_plane_corner_{group_name}.png"
@@ -93,9 +93,9 @@ BASE_CFG = {
     "gw": {
         "source_pos": GW_SOURCE_POS,
         "error_scales": {
-            "sigma_td": 0.02,#0.005,
+            "sigma_td": 0.002,#0.005,
             "epsilon": 0.0001,
-            "sigma_dL_eff": 0.02,
+            "sigma_dL_eff": 0.002,
         },
         "source_plane_bounds": {
             "y0gw": (GW_SOURCE_POS[0] - SOURCE_HALF_Y0, GW_SOURCE_POS[0] + SOURCE_HALF_Y0),
@@ -212,7 +212,7 @@ ctx["cfg"]["priors"] = {
     "lens1_dec_0":    float(tp["lens1_dec_0"]),
     "y0gw":           dist.Uniform(GW_SOURCE_POS[0] - SOURCE_HALF_Y0, GW_SOURCE_POS[0] + SOURCE_HALF_Y0),
     "y1gw":           dist.Uniform(GW_SOURCE_POS[1] - SOURCE_HALF_Y1, GW_SOURCE_POS[1] + SOURCE_HALF_Y1),
-    "lens0_gamma":    float(tp["lens0_gamma"]),
+    "lens0_gamma":    dist.Uniform(1.5, 3.0),#float(tp["lens0_gamma"]),
     "lens0_e2":       dist.Uniform(-0.5, 0.5),
 }
 
