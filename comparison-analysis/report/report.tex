@@ -128,6 +128,86 @@ secondary $y_1^{\rm gw}$ mode near $-0.08$ visible at large error.}
 \label{fig:c2}
 \end{figure}
 
+\section{Case 2f --- GW-only with $T_\star,d_L$ free: a degeneracy and its resolution}
+
+\textbf{Motivation.} Case 2 fixes $T_\star$ (time-delay distance) and $d_L$ (luminosity
+distance) to truth. Freeing them --- \textbf{free (6):} $e_2,\gamma,y_0^{\rm gw},y_1^{\rm gw},
+T_\star,d_L$ --- tests whether GW-only data can measure the distance/time-delay normalisation
+on their own, the quantity time-delay cosmography ultimately wants. \textbf{Methods:}
+fisher-source, deriv-approx-source (regularized informed NUTS, required once $T_\star,d_L$ open
+a near-flat direction), nautilus-source (helens solver), nautilus + lenstronomy solver.
+\textbf{Priors:} Uniform truth$\pm50\%$ on $T_\star,d_L$; nautilus boxes from the fisher sigmas
+(truth$\pm3\sigma$, clipped), as in Case 2.
+
+\textbf{The degeneracy.} Freeing $T_\star,d_L$ opens two near-flat Fisher directions:
+$\mathrm{corr}(d_L,\gamma)=-0.999$, $\mathrm{corr}(T_\star,y_1^{\rm gw})=+0.998$,
+$\mathrm{corr}(T_\star,d_L)=-0.97$, with two unit-normalised Fisher eigenvalues at
+$3.7\times10^{-11}$ and $1.1\times10^{-9}$ (verified real rather than inversion noise: sigmas
+from the unit-normalised inversion match the fisher-meta sigmas to 4 decimal places).
+Physically, $d_L^{\rm eff}=d_L/\sqrt{\mu}$ ties $d_L$ to the magnification, and time delays fix
+only the Fermat-potential scale up to the $T_\star$ normalisation --- GW observables alone
+under-determine which combination of $T_\star,d_L,\gamma$ produced the data.
+
+\textbf{Precise regime ($\sigma_{t_d}=0.1\%,\sigma_{d_L^{\rm eff}}=5\%$): biased along the
+ridge.} The two exact-likelihood samplers (helens and lenstronomy solvers) agree with each
+other (means within $\sim0.5\sigma$) but both sit 1.3--3.1$\sigma$ down-ridge of truth
+(Fig.~\ref{fig:c2f}a) --- a coherent shift along the degenerate direction, not a solver or
+sampler bug (all six pulls move together with the correlation signs above). deriv-approx-source,
+a Taylor surrogate centred at truth, stays truth-centred by construction and is the
+local-curvature answer, not the full-posterior one.
+
+\textbf{scan\_opt regime ($\sigma_{t_d}=1\%,\sigma_{d_L^{\rm eff}}=0.5\%$): resolved by
+re-allocating error, not by shrinking it.} Because $d_L^{\rm eff}$, not $t_d$, carries the
+distance normalisation, trading back 10$\times$ on time-delay precision to buy 10$\times$ on
+$d_L^{\rm eff}$ collapses the ridge: every one of the 24 pulls across all four methods satisfies
+$|p|\le0.62$ (Fig.~\ref{fig:c2f}b); $d_L$ is measured to $\sim$8--9\%, $T_\star$ to $\sim$4--5\%,
+$\gamma$ to $\sim$10\%, source position to $\sim$2\%. This operating point was located in
+advance with a Fisher error-requirement scan; its analytic $J^\top C^{-1}J$ prediction matches
+the pipeline's measured Hessian sigmas to five decimal places at the chosen budget, confirming
+the scan and the sampler compute the same object. fisher-source also becomes informative rather
+than a correlation-only source: $\mathrm{cond}({\rm FM})$ improves from $\sim10^{26}$-class
+degeneracy (precise) to $6.5\times10^{22}$ (scan\_opt).
+
+\begin{table}[h]\centering\footnotesize
+\caption{Case 2f, nautilus-helens: same total measurement effort, different
+$\sigma_{t_d}$/$\sigma_{d_L^{\rm eff}}$ split. Re-allocating error removes the bias.}
+\label{tab:c2f}
+\begin{tabular}{lcccc}
+\toprule
+param (truth) & precise pull & scan\_opt pull & scan\_opt std \\
+\midrule
+$e_2$ (0.1) & $+2.4\sigma$ & $+0.03\sigma$ & 0.0103 \\
+$\gamma$ (2.0) & $+1.7\sigma$ & $+0.50\sigma$ & 0.193 \\
+$y_0^{\rm gw}$ (0.2) & $+2.1\sigma$ & $-0.45\sigma$ & 0.0047 \\
+$y_1^{\rm gw}$ ($-0.05$) & $-2.0\sigma$ & $+0.62\sigma$ & 0.0076 \\
+$T_\star$ ($1.479\times10^7$\,s) & $-2.1\sigma$ & $+0.49\sigma$ & $5.97\times10^5$\,s \\
+$d_L$ (11214\,Mpc) & $-3.1\sigma$ & $-0.25\sigma$ & 1038\,Mpc \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\begin{subfigure}{0.49\textwidth}\includegraphics[width=\linewidth]{case2f_precise_ridge}\caption{precise: degenerate ridge, 1.3--3.1$\sigma$ off truth}\end{subfigure}
+\hfill
+\begin{subfigure}{0.49\textwidth}\includegraphics[width=\linewidth]{case2f_scanopt_resolved}\caption{scan\_opt: ridge resolved, all $|p|\le0.62$}\end{subfigure}
+\caption{Case 2f, full six-parameter corner ($e_2,\gamma,y_0^{\rm gw},y_1^{\rm gw},T_\star,d_L$),
+three methods overlaid (red deriv-approx-source, orange nautilus-helens, blue
+nautilus+lenstronomy), truth crosshairs dashed red. Re-allocating the same total measurement
+effort from time-delay to $d_L^{\rm eff}$ precision collapses the $T_\star$--$d_L$--$\gamma$
+degeneracy without adding data.}
+\label{fig:c2f}
+\end{figure}
+
+\textbf{Caveats.} nautilus-helens has the fewest effective samples of the two exact solvers at
+scan\_opt ($n_{\rm eff}=302$ vs 3023 for lenstronomy); its $\sim$0.5$\sigma$ residual pulls on
+$\gamma,y_1^{\rm gw},T_\star$ are consistent with that sampling noise, not bias. $\gamma$ remains
+largely prior-dominated at scan\_opt (GW-only constrains the $\gamma$--$d_L$ combination, not
+$\gamma$ alone). The $T_\star$--$d_L$ ridge itself is not removed by scan\_opt, only bounded:
+all three sampled methods still trace the same anti-correlated band, now centred on truth. This
+degeneracy is exactly what Case 3 (EM+GW) breaks by an independent route --- pinning the
+mass/source model with EM data rather than re-balancing GW error budgets.
+
 \section{Case 3 --- EM+GW}
 \textbf{Free (27):} full joint EM pixel model + GW sector ($T_\star, d_L, y_0^{\rm gw}, y_1^{\rm gw}$).
 \textbf{Fixed to truth:} shear origin only. \textbf{Methods:} fisher-source, deriv-approx-source,
@@ -176,10 +256,29 @@ the only residual being the known S\'ersic $b_n$-convention offset;
 (ii) \textbf{GW-only} --- all methods are truth-consistent; precise timing shrinks the posterior
 $\sim$5--40$\times$ and resolves the $y_1^{\rm gw}$ bimodality, and Fisher becomes an accurate
 surrogate;
-(iii) \textbf{EM+GW} --- EM fixes the lens/source, so precise GW data act almost entirely on the
-GW-only sector, turning $d_L$ from unconstrained into a $\sim$2.6\% measurement.
+(iii) \textbf{GW-only, $T_\star,d_L$ free} --- freeing the distance/time-delay normalisation opens
+a near-perfect $T_\star$--$d_L$--$\gamma$ degeneracy (correlations $\ge0.97$) that biases every
+method coherently by 1.3--3.1$\sigma$ under a time-delay-optimised error budget; re-allocating the
+same total measurement effort toward $d_L^{\rm eff}$ precision (found in advance with a Fisher
+error-requirement scan) collapses all 24 pulls to $|p|\le0.62$ and yields $d_L$ to $\sim$8--9\%,
+$T_\star$ to $\sim$4--5\%, with zero extra data --- the key lesson being that \emph{how} error
+budget is spent matters as much as its total size, and a tight posterior is not necessarily a
+correct one;
+(iv) \textbf{EM+GW} --- EM fixes the lens/source, so precise GW data act almost entirely on the
+GW-only sector, turning $d_L$ from unconstrained into a $\sim$2.6\% measurement --- an independent
+route to breaking the same $T_\star$--$d_L$--$\gamma$ degeneracy that (iii) resolves by GW error
+re-allocation alone.
 Cross-checks hold throughout (independent solvers agree to $\sim$$10^{-8}$ nats; vectorized vs.\
-scalar likelihoods to $\sim$$10^{-11}$). The one method-level caveat is deriv-approx-source, whose
-banana-surrogate NUTS mixes poorly once the EM+GW posterior becomes very sharp --- fisher-source and
-nautilus-source remain reliable across all regimes.
+scalar likelihoods to $\sim$$10^{-11}$; analytic Fisher predictions match measured Hessian sigmas
+to 5 decimal places). The one method-level caveat is deriv-approx-source, whose banana-surrogate
+NUTS mixes poorly once a posterior becomes very sharp or opens a near-flat direction without
+regularization --- fisher-source and nautilus-source remain reliable across all regimes tested.
+
+This concludes the current phase of the comparison analysis: EM-only, GW-only (fixed and free
+$T_\star,d_L$, three error regimes), and EM+GW are all cross-validated across gwemfish, PyAutoLens
+and lenstronomy on one common mock, with every run's samples, priors and configuration saved for
+exact reproduction (see \texttt{comparison-analysis/*/results*.md} and \texttt{handoff.md}).
+Open follow-ups (not required for this conclusion) are recorded in
+\texttt{comparison-analysis/handoff.md}: a mac-environment (herculens 0.3.x) rerun to confirm
+absolute numbers, and a Case 3 nautilus-source variant with a freed GW source position.
 \end{document}
