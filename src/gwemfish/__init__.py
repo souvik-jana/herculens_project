@@ -54,6 +54,7 @@ from .nautilus_source_inference import (
 )
 from .nautilus_image_inference import build_image_plane_problem
 from .fisher import compute_fisher
+from .map_optimizer import find_map, MapResult, DEFAULT_MAP_CFG
 from .config import (
     arcsecond_to_radians,
     Mpc_to_m,

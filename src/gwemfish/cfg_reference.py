@@ -324,6 +324,36 @@ COMPLETE_CFG = {
         # matrix and clips/regularizes small or negative eigenvalues before use (see
         # gwemfish.inference.run_mcmc_informed docstring) -- helps when H0 is near-singular.
         "regularize": False,
+        # ---- MAP-optimized expansion point (real-data mode; gwemfish.map_optimizer) ----
+        # When enabled=True, run_inference finds the log-posterior maximum (multi-start
+        # vmapped Adam -> optax L-BFGS polish, in numpyro-unconstrained space) and uses it
+        # as the Taylor expansion point u0 instead of truth_params. Applies to every method
+        # that uses u0/H0: fisher(-source), deriv-approx(-source), hmc-informed(-source),
+        # and hmc with informed=True. With enabled=True, sampled keys MISSING from
+        # truth_params no longer raise -- they are initialized from a prior draw (refine
+        # via init_overrides). enabled=False (default) => exact legacy behavior.
+        # Diagnostics land in ctx['likelihood']['map'] (dict) and
+        # ctx['likelihood']['map_result'] (MapResult).
+        "map": {
+            "enabled": False,          # bool. Master switch.
+            "n_starts": 16,            # int. Prior-draw starts (a "center" start at
+                                       # truth/guess is added on top; see include_center_start).
+            "adam": {"steps": 1500,    # int. Adam steps per start (stage A, global-ish search).
+                     "lr": 1e-2},      # float. Adam learning rate (unconstrained space).
+            "lbfgs": {"maxiter": 500,  # int. L-BFGS iteration cap (stage B polish).
+                      "tol": 1e-8},    # float. L-BFGS gradient-norm stop tolerance.
+            "top_k_polish": 4,         # int. How many best-after-Adam starts get L-BFGS.
+            "init_overrides": {},      # {param: float}. User initial guesses for the center
+                                       # start (real data), e.g. {'lens_theta_E': 1.4}.
+            "rng_key": 0,              # int. Seeds the prior-draw starts.
+            "grad_norm_warn": 1e-4,    # float. Warn if |grad logp| at u_map exceeds this.
+            "check_hessian": True,     # bool. Eigendecompose H(u_map); warn if not
+                                       # negative-definite (flat direction / saddle).
+            "vmap": True,              # bool. vmap Adam across starts (False: sequential
+                                       # lax.map -- lower memory, slower).
+            "include_center_start": True,  # bool. Include the truth/guess start.
+            "verbose": True,           # bool. Print per-start logp table and MAP summary.
+        },
     },
 
     # ---- cfg["plot"]: plot_posterior / plot_source_posterior appearance (not read by run_inference) ---

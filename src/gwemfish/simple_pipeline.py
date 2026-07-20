@@ -208,6 +208,13 @@ def _save_pipeline_json(
         json.dump(_to_serializable(payload), f, indent=2)
 
 
+def _default_map_cfg() -> Dict[str, Any]:
+    """Deep copy of the MAP-optimizer defaults (lazy import keeps module light)."""
+    from .map_optimizer import DEFAULT_MAP_CFG
+
+    return copy.deepcopy(DEFAULT_MAP_CFG)
+
+
 def make_default_cfg() -> Dict[str, Any]:
     """Return a default configuration dict for the pipeline."""
     # Lazy imports so this module stays lightweight.
@@ -313,6 +320,12 @@ def make_default_cfg() -> Dict[str, Any]:
             "rng_key": 123,
             # How the one-shot get_sample() PRNGKey is seeded.
             "prior_sample_rng_key": 123,
+            # MAP-optimizer expansion point (real-data mode): when ``enabled``,
+            # run_inference finds the log-posterior maximum (multi-start Adam +
+            # L-BFGS, see gwemfish.map_optimizer) and uses it as ``u0`` instead
+            # of ``truth_params``. Missing truth keys then stop raising and are
+            # initialized from a prior draw. See map_optimizer.DEFAULT_MAP_CFG.
+            "map": _default_map_cfg(),
         },
         "plot": {
             "plot_mode": "groupwise",  # groupwise | combined | subset
@@ -1544,6 +1557,9 @@ def run_inference(
     keys_all = list(prior_sample.keys())
     keys_to_include = [k for k in keys_all if k not in fixed_literal_keys]
 
+    map_cfg = (cfg_full.get("inference", {}) or {}).get("map", {}) or {}
+    map_enabled = bool(map_cfg.get("enabled", False))
+
     input_params: Dict[str, Any] = {}
     missing = []
     for k in keys_all:
@@ -1554,11 +1570,39 @@ def run_inference(
         else:
             missing.append(k)
     if missing:
-        raise ValueError(
-            "Cannot build Fisher expansion point `input_params` for keys: "
-            + ", ".join(missing)
-            + ". Provide these via `cfg['priors']` (and re-run setup), or ensure simulation truth matches."
+        if map_enabled:
+            # Real-data mode: no truth for these keys. Initialize the MAP search
+            # from the prior draw (find_map adds more prior-draw starts anyway);
+            # cfg['inference']['map']['init_overrides'] can refine per key.
+            for k in missing:
+                input_params[k] = float(prior_sample[k])
+        else:
+            raise ValueError(
+                "Cannot build Fisher expansion point `input_params` for keys: "
+                + ", ".join(missing)
+                + ". Provide these via `cfg['priors']` (and re-run setup), ensure "
+                "simulation truth matches, or set cfg['inference']['map']['enabled']=True "
+                "to optimize the expansion point instead of requiring truth."
+            )
+
+    map_result = None
+    if map_enabled:
+        # Replace the truth/guess expansion point with the MAP of the posterior
+        # (multi-start Adam + L-BFGS in unconstrained space). Everything
+        # downstream (u0, compute_fisher, deriv-approx / fisher / informed NUTS)
+        # is untouched and simply expands around the optimized point.
+        from .map_optimizer import find_map
+
+        map_result = find_map(
+            model=probmodel.model,
+            input_params=input_params,
+            keys_to_include=keys_to_include,
+            likelihood_seed=likelihood_seed,
+            cfg_map=map_cfg,
+            prior_sample_fn=lambda key: probmodel.get_sample(prng_key=key),
         )
+        for _i, _k in enumerate(keys_to_include):
+            input_params[_k] = float(map_result.u_map[_i])
     def check_contributions(model, rng_key=None):
         def get_likelihood_contributions(params, _rng_key=rng_key):
             """Extract likelihood and prior contributions from all sites in the model trace."""
@@ -1647,6 +1691,9 @@ def run_inference(
     ctx["likelihood"]["input_params"] = input_params
     ctx["likelihood"]["keys_to_include"] = keys_to_include
     ctx["likelihood"]["check_contributions"] = contributions
+    if map_result is not None:
+        ctx["likelihood"]["map"] = map_result.summary()
+        ctx["likelihood"]["map_result"] = map_result
 
     u0 = jnp.asarray([input_params[k] for k in keys_to_include], dtype=jnp.float64)
     ctx["likelihood"]["u0"] = u0
