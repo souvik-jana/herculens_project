@@ -44,18 +44,29 @@ def setup_pixel_grid(npix=20, pix_scl=0.4):
     return pixel_grid
 
 
-def setup_psf(psf_type='GAUSSIAN', fwhm=0.2, pixel_size=0.4):
+def setup_psf(psf_type='GAUSSIAN', fwhm=0.2, pixel_size=0.4,
+              kernel_point_source=None, kernel_supersampling_factor=1,
+              truncation=None):
     """Setup PSF for EM observations.
-    
+
     Args:
-        psf_type: PSF type (default: 'GAUSSIAN')
-        fwhm: Full width at half maximum in arcsec (default: 0.2)
-        pixel_size: Pixel size in arcsec (default: 0.4)
-    
-    Returns: 
+        psf_type: 'GAUSSIAN' (default), 'PIXEL' (custom/real kernel), or 'NONE'
+        fwhm: Full width at half maximum in arcsec, GAUSSIAN only (default: 0.2)
+        pixel_size: Pixel size in arcsec, GAUSSIAN only (default: 0.4)
+        kernel_point_source: centered, odd-sized 2D array, required for 'PIXEL'
+        kernel_supersampling_factor: supersampling of the provided kernel (default: 1)
+        truncation: Gaussian truncation in units of sigma (default: herculens default)
+
+    Returns:
         psf (hcl.PSF instance)
     """
-    psf = hcl.PSF(psf_type=psf_type, fwhm=fwhm, pixel_size=pixel_size)
+    kwargs = {'psf_type': psf_type, 'fwhm': fwhm, 'pixel_size': pixel_size}
+    if kernel_point_source is not None:
+        kwargs['kernel_point_source'] = kernel_point_source
+        kwargs['kernel_supersampling_factor'] = kernel_supersampling_factor
+    if truncation is not None:
+        kwargs['truncation'] = truncation
+    psf = hcl.PSF(**kwargs)
     return psf
 
 

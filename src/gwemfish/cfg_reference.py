@@ -118,7 +118,11 @@ COMPLETE_CFG = {
         "enabled": True,  # bool. False => setup_em_observation returns {} (skip EM entirely,
                            # e.g. for a pure GW-only run). Mirror with mode='GW-only'.
         "pixel_grid_kwargs": {"npix": 20, "pix_scl": 0.4},   # dict -> setup_pixel_grid(**...)
-        "psf_kwargs": {"psf_type": "GAUSSIAN", "fwhm": 0.2, "pixel_size": 0.4},  # -> setup_psf(**...)
+        # dict -> setup_psf(**...). psf_type: "GAUSSIAN" (fwhm, pixel_size), "PIXEL"
+        # (kernel_point_source: centered odd-sized 2D array, e.g. a real instrument PSF;
+        # optional kernel_supersampling_factor), or "NONE". Optional truncation (sigma
+        # units) for GAUSSIAN.
+        "psf_kwargs": {"psf_type": "GAUSSIAN", "fwhm": 0.2, "pixel_size": 0.4},
         "noise_simu_kwargs": {"npix": 20, "background_rms": 1e-2, "exposure_time": 1e3},
         # Inference-time noise: background_rms=None means it gets SAMPLED (noise_sigma_bkg prior)
         # rather than held fixed -- set a float here (or via cfg["priors"]["noise_sigma_bkg"]) to
