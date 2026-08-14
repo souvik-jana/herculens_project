@@ -24,12 +24,16 @@ Later PAL fit: use ctx_pal["dataset_gwemfish"] (exact gwemfish data + model-base
 sigma + same PSF kernel) — see pal-infer skill golden rule.
 """
 
+import copy
 import os
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OUTPUT_DIR = os.path.join(REPO_ROOT, "examples/outputs/psf_plot_and_pal")
 
 USE_CUSTOM_PSF = True   # False => default GAUSSIAN psf_kwargs from make_default_cfg()
+# >1: fine kernel grid AND supersampled numerics, so the fine kernel is actually
+# convolved on the subgrid. Both knobs must agree -- see example_pixel_psf.py.
+KERNEL_SUPERSAMPLING = 2
 
 os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=20"
 import jax
@@ -71,6 +75,15 @@ def gaussian_kernel(size, sigma_px):
     return k / k.sum()
 
 
+def gaussian_kernel_supersampled(size_coarse, sigma_px_coarse, ss):
+    size_fine = (size_coarse - 1) * ss + 1
+    half = size_fine // 2
+    pix_fine = 1.0 / ss
+    y, x = np.mgrid[-half:half + 1, -half:half + 1].astype(float)
+    k = np.exp(-(x**2 + y**2) * pix_fine**2 / (2.0 * sigma_px_coarse**2))
+    return k / k.sum()
+
+
 # --- cfg -----------------------------------------------------------------------
 CFG = make_default_cfg()
 CFG["output"]["output_dir"] = OUTPUT_DIR
@@ -79,9 +92,22 @@ pix_scl = CFG["em"]["pixel_grid_kwargs"]["pix_scl"]
 if USE_CUSTOM_PSF:
     fwhm = CFG["em"]["psf_kwargs"]["fwhm"]
     sigma_px = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0))) / pix_scl
-    my_kernel = gaussian_kernel(size=5, sigma_px=sigma_px)
-    CFG["em"]["psf_kwargs"] = {"psf_type": "PIXEL", "kernel_point_source": my_kernel}
-    print(f"PSF: PIXEL, hand-built {my_kernel.shape} Gaussian (fwhm={fwhm}\")")
+    if KERNEL_SUPERSAMPLING > 1:
+        my_kernel = gaussian_kernel_supersampled(5, sigma_px, KERNEL_SUPERSAMPLING)
+        CFG["em"]["psf_kwargs"] = {
+            "psf_type": "PIXEL",
+            "kernel_point_source": my_kernel,
+            "kernel_supersampling_factor": KERNEL_SUPERSAMPLING,
+        }
+        CFG["em"]["kwargs_numerics"] = {
+            "supersampling_factor": KERNEL_SUPERSAMPLING,
+            "supersampling_convolution": True,
+        }
+        print(f"PSF: PIXEL, fine {my_kernel.shape}, ss={KERNEL_SUPERSAMPLING}, fwhm={fwhm}\"")
+    else:
+        my_kernel = gaussian_kernel(size=5, sigma_px=sigma_px)
+        CFG["em"]["psf_kwargs"] = {"psf_type": "PIXEL", "kernel_point_source": my_kernel}
+        print(f"PSF: PIXEL, hand-built {my_kernel.shape} Gaussian (fwhm={fwhm}\")")
 else:
     print("PSF: default GAUSSIAN from make_default_cfg()")
 
@@ -90,7 +116,24 @@ ctx = setup_em_observation(cfg=CFG)
 ctx = setup_gw_observation(ctx, cfg=ctx["cfg"])
 
 kernel_used = np.asarray(ctx["lens_image"].PSF.kernel_point_source, float)
+conv_used = type(ctx["lens_image"].ImageNumerics._conv).__name__
 print(f"Kernel in ctx: shape {kernel_used.shape}, sum = {kernel_used.sum():.6f}")
+print(f"Convolution class: {conv_used}, "
+      f"grid ss = {ctx['lens_image'].ImageNumerics._grid.supersampling_factor}")
+
+# GW image positions come from the lens-equation solver, so supersampled EM numerics
+# must not move them. Re-solve with plain numerics and compare.
+CFG_REF = copy.deepcopy(CFG)
+CFG_REF["em"]["kwargs_numerics"] = {"supersampling_factor": 1}
+CFG_REF["em"]["psf_kwargs"] = {"psf_type": "GAUSSIAN", "fwhm": fwhm, "pixel_size": pix_scl}
+ctx_ref = setup_gw_observation(setup_em_observation(cfg=CFG_REF), cfg=CFG_REF)
+gw_shift = max(
+    float(np.max(np.abs(np.asarray(ctx["x_img_gw"]) - np.asarray(ctx_ref["x_img_gw"])))),
+    float(np.max(np.abs(np.asarray(ctx["y_img_gw"]) - np.asarray(ctx_ref["y_img_gw"])))),
+)
+print(f"GW image positions vs ss=1 reference: max shift = {gw_shift:.3e} arcsec")
+if gw_shift > 1e-12:
+    raise RuntimeError(f"EM numerics changed GW image positions by {gw_shift:.3e} arcsec")
 
 # --- gwemfish plots ------------------------------------------------------------
 plot_system_observation(
@@ -148,9 +191,17 @@ plot_system_observation_pal(
 save_pal_outputs(ctx_pal, OUTPUT_DIR)
 
 stats = ctx_pal["match_stats"]
+ss_info = stats["supersampling"]
+# PAL mirrors the sub-pixel *sampling* (over_sample_size) but always convolves at the
+# image pixel scale. When herculens convolves on the subgrid instead, the model residual
+# rises to ~2-3% of peak and no PAL setting removes it.
+model_budget = 5e-2 if ss_info["hcl_supersampling_convolution"] else 5e-3
 lines = [
     "gwemfish vs PAL match stats (see gwemfish-pal skill residual budget):",
-    f"  model_max_rel_diff        = {stats['model_max_rel_diff']:.3e}  (expect few x 1e-3 of peak)",
+    f"  PAL over_sample_size      = {ss_info['over_sample_size']}, "
+    f"HCL supersampling_convolution = {ss_info['hcl_supersampling_convolution']}",
+    f"  model_max_rel_diff        = {stats['model_max_rel_diff']:.3e}  "
+    f"(budget {model_budget:.0e}; few x 1e-3 without subgrid convolution)",
     f"  model_median_rel_diff     = {stats['model_median_rel_diff']:.3e}",
     f"  noise_map_median_rel_diff = {stats['noise_map_median_rel_diff']:.3e}  (expect < 5e-2)",
     f"  noise_z_std               = {stats['noise_z_std']:.3f}  (two RNG draws; expect ~1)",
@@ -164,6 +215,21 @@ lines = [
     "  ctx_pal['dataset_pal']       — PAL-simulated data (own noise realization)",
     "  ctx_pal['tracer']            — PAL tracer (mass + light converted from ctx)",
 ]
+if ss_info["hcl_supersampling_convolution"]:
+    lines += [
+        "",
+        "NOTE: herculens convolved on the subgrid; PAL convolves at the image pixel",
+        "scale, so the PAL model carries a ~2-3% of peak systematic here. A PAL fit to",
+        "dataset_gwemfish will absorb that into the light parameters. Use",
+        "supersampling_convolution=False if the PAL mirror has to be tight.",
+    ]
+
+if stats["model_max_rel_diff"] > model_budget:
+    raise RuntimeError(
+        f"PAL model mismatch {stats['model_max_rel_diff']:.3e} exceeds budget {model_budget:.0e}"
+    )
+if not 0.8 < stats["noise_z_std"] < 1.3:
+    raise RuntimeError(f"noise z-statistic {stats['noise_z_std']:.3f} not ~1")
 print("\n".join(lines))
 with open(os.path.join(OUTPUT_DIR, "match_stats.txt"), "w") as f:
     f.write("\n".join(lines) + "\n")

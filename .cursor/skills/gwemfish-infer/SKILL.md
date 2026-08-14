@@ -315,4 +315,6 @@ cfg["em"]["psf_kwargs"] = {"psf_type": "PIXEL", "kernel_point_source": my_kernel
 
 PSF is baked into `ctx["lens_image"]` once — all methods above use it automatically. See `cfg_reference.py` → `PSF_EXAMPLES`, `example_pixel_psf_em_only.py`.
 
+**Supersampling policy:** `supersampling_factor` defaults to 1 and must stay there unless the user agrees to change it. If a system looks undersampled, call `recommend_supersampling(cfg)`, report the suggestion, and wait — never raise it on your own. Gradient methods (`deriv-approx`, `hmc`, `fisher`) run the whole PSF path under `jax.grad`; supersampled convolution is verified differentiable and correct (autodiff vs finite differences to 4e-6), so no method is off-limits, but the cost is ~factor² profile evaluations. See the `gwemfish-simulate` skill for the full rule.
+
 See [reference.md](reference.md) for full method/mode table and nautilus cfg keys.

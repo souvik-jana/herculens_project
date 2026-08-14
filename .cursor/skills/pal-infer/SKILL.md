@@ -71,11 +71,18 @@ dataset = al.Imaging(
     noise_map=al.Array2D.no_mask(values=to_pal_layout(em["sigma"]), pixel_scales=PIX_SCL),
     psf=al.Kernel2D.no_mask(values=np.flipud(em["psf_kernel"]),
                             pixel_scales=PIX_SCL, normalize=True),
-    over_sample_size_lp=1,          # match gwemfish: no extra oversampling
+    over_sample_size_lp=1,          # = gwemfish kwargs_numerics["supersampling_factor"]
 )
 dataset = dataset.apply_mask(mask=al.Mask2D.all_false(
     shape_native=(NPIX, NPIX), pixel_scales=PIX_SCL))   # fit all pixels
+```
 
+`over_sample_size_lp` must track the ctx, not be pinned at 1 — a supersampled gwemfish
+mock fitted with `over_sample_size_lp=1` costs 25% of peak in model mismatch, which the
+fit absorbs into the light parameters. `simulate_in_pal` already sets it correctly on
+`ctx_pal["dataset_gwemfish"]`; prefer that dataset over hand-building this one.
+
+```python
 mass = af.Model(al.mp.PowerLaw)
 mass.centre.centre_0 = 0.0          # float -> fixed
 mass.centre.centre_1 = 0.0

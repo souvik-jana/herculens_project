@@ -54,7 +54,15 @@ def setup_psf(psf_type='GAUSSIAN', fwhm=0.2, pixel_size=0.4,
         fwhm: Full width at half maximum in arcsec, GAUSSIAN only (default: 0.2)
         pixel_size: Pixel size in arcsec, GAUSSIAN only (default: 0.4)
         kernel_point_source: centered, odd-sized 2D array, required for 'PIXEL'
-        kernel_supersampling_factor: supersampling of the provided kernel (default: 1)
+        kernel_supersampling_factor: sampling of the provided kernel, in units of
+            pixel_size / factor (default: 1). This only *declares* the sampling:
+            herculens immediately degrades the kernel to the image pixel grid, and
+            the supplied array is convolved as given only when the numerics use the
+            same factor with supersampling_convolution=True, i.e.
+            kwargs_numerics={'supersampling_factor': factor,
+                             'supersampling_convolution': True}.
+            With a different factor herculens silently discards the array and
+            interpolates a replacement; setup_em_observation warns in both cases.
         truncation: Gaussian truncation in units of sigma (default: herculens default)
 
     Returns:
@@ -110,7 +118,10 @@ def simulate_em(kwargs_lens, kwargs_source, kwargs_lens_light,
         psf: hcl.PSF instance
         noise_class: hcl.Noise instance (with background_rms for simulation)
         seed: Random seed for noise (default: None)
-        kwargs_numerics: Optional numerics kwargs (e.g., {'supersampling_factor': 1})
+        kwargs_numerics: Optional numerics kwargs (e.g., {'supersampling_factor': 1}).
+            {'supersampling_factor': n, 'supersampling_convolution': True} evaluates
+            the profiles on the pix_scl / n subgrid and convolves there; herculens
+            forces supersampling_convolution off when n == 1.
         exposure_time: Exposure time for inference noise (default: 1e3)
     
     Returns: 

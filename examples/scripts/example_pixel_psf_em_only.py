@@ -13,6 +13,7 @@ Outputs (gitignored) under examples/outputs/pixel_psf_em_only/:
 """
 
 import os
+import time
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 OUTPUT_DIR = os.path.join(REPO_ROOT, "examples/outputs/pixel_psf_em_only")
@@ -62,13 +63,43 @@ def gaussian_kernel(size, sigma_px):
     return k / k.sum()
 
 
-# --- The custom PSF: a Gaussian kernel made by hand ---------------------------
+def gaussian_kernel_supersampled(size_coarse, sigma_px_coarse, ss):
+    size_fine = (size_coarse - 1) * ss + 1
+    half = size_fine // 2
+    pix_fine = 1.0 / ss
+    y, x = np.mgrid[-half:half + 1, -half:half + 1].astype(float)
+    k = np.exp(-(x**2 + y**2) * pix_fine**2 / (2.0 * sigma_px_coarse**2))
+    return k / k.sum()
+
+
+# --- The custom PSF: Gaussian kernel (optional supersampling) -------------------
+SUPERSAMPLING = 2
 pix_scl = 0.1
 fwhm = 0.067
 sigma_px = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0))) / pix_scl
-my_kernel = gaussian_kernel(size=5, sigma_px=sigma_px)
-print(f"Custom kernel: 5x5 Gaussian, fwhm={fwhm}\" -> sigma={sigma_px:.4f} px, "
-      f"sum={my_kernel.sum():.6f}")
+size_coarse = 5
+if SUPERSAMPLING > 1:
+    my_kernel = gaussian_kernel_supersampled(size_coarse, sigma_px, SUPERSAMPLING)
+    psf_kwargs = {
+        "psf_type": "PIXEL",
+        "kernel_point_source": my_kernel,
+        "kernel_supersampling_factor": SUPERSAMPLING,
+    }
+    # The fine kernel is only convolved as supplied when the numerics supersample by
+    # the same factor with supersampling_convolution on; otherwise it is degraded and
+    # the detail is discarded. See example_pixel_psf.py.
+    kwargs_numerics = {
+        "supersampling_factor": SUPERSAMPLING,
+        "supersampling_convolution": True,
+    }
+    print(f"Custom kernel: fine {my_kernel.shape}, ss={SUPERSAMPLING}, "
+          f"fwhm={fwhm}\" -> sigma={sigma_px:.4f} px, sum={my_kernel.sum():.6f}")
+else:
+    my_kernel = gaussian_kernel(size=size_coarse, sigma_px=sigma_px)
+    psf_kwargs = {"psf_type": "PIXEL", "kernel_point_source": my_kernel}
+    kwargs_numerics = DEFAULT_KWARGS_NUMERICS
+    print(f"Custom kernel: {size_coarse}x{size_coarse} Gaussian, fwhm={fwhm}\" -> "
+          f"sigma={sigma_px:.4f} px, sum={my_kernel.sum():.6f}")
 
 # --- cfg: EM-only reference system, PIXEL PSF ---------------------------------
 source_pos = (0.05, 0.1)
@@ -77,10 +108,10 @@ CFG["use_parameter_layout"] = True
 CFG["em"].update(
     {
         "pixel_grid_kwargs": {"npix": 40, "pix_scl": pix_scl},
-        "psf_kwargs": {"psf_type": "PIXEL", "kernel_point_source": my_kernel},
+        "psf_kwargs": psf_kwargs,
         "noise_simu_kwargs": {"npix": 40, "background_rms": 1e-2, "exposure_time": 2200},
         "noise_inf_kwargs": {"npix": 40, "background_rms": None, "exposure_time": 2200},
-        "kwargs_numerics": DEFAULT_KWARGS_NUMERICS,
+        "kwargs_numerics": kwargs_numerics,
         "exposure_time": 2200,
         "seed": 87651,
         "source_pos": source_pos,
@@ -150,14 +181,49 @@ ctx = setup_em_observation(cfg=CFG)
 tp = ctx["truth_params"]
 
 kernel_used = np.asarray(ctx["lens_image"].PSF.kernel_point_source, float)
-print(f"Kernel round-trip max diff: {np.max(np.abs(kernel_used - my_kernel)):.3e}")
+print(f"Degraded kernel in ctx: shape {kernel_used.shape}, sum={kernel_used.sum():.6f}")
+print(f"Convolution class: {type(ctx['lens_image'].ImageNumerics._conv).__name__}, "
+      f"grid ss = {ctx['lens_image'].ImageNumerics._grid.supersampling_factor}")
+if SUPERSAMPLING > 1:
+    print(f"Fine input kernel shape: {my_kernel.shape}, ss={SUPERSAMPLING}")
+else:
+    print(f"Kernel round-trip max diff: {np.max(np.abs(kernel_used - my_kernel)):.3e}")
+
+
+# NUTS differentiates the whole PSF path, and with supersampled numerics that path
+# runs through SubgridKernelConvolution (average-pool binning + split-kernel sum).
+# Validate the gradient against a central difference before spending time sampling.
+def model_sum(theta_E):
+    kwargs_lens = [dict(kw) for kw in ctx["kwargs_lens"]]
+    kwargs_lens[0]["theta_E"] = theta_E
+    return ctx["lens_image"].model(
+        kwargs_lens=kwargs_lens,
+        kwargs_source=ctx["cfg"]["em"]["kwargs_source"],
+        kwargs_lens_light=ctx["cfg"]["em"]["kwargs_lens_light"],
+    ).sum()
+
+
+theta_E_truth = float(ctx["kwargs_lens"][0]["theta_E"])
+step = 1e-5
+grad_autodiff = float(jax.grad(model_sum)(theta_E_truth))
+grad_finite = float(
+    (model_sum(theta_E_truth + step) - model_sum(theta_E_truth - step)) / (2 * step)
+)
+grad_rel = abs(grad_autodiff - grad_finite) / max(abs(grad_finite), 1e-30)
+print(f"d(model sum)/d(theta_E): autodiff = {grad_autodiff:+.6f}, "
+      f"finite diff = {grad_finite:+.6f}, rel err = {grad_rel:.2e}")
+if not np.isfinite(grad_autodiff) or grad_autodiff == 0.0 or grad_rel > 1e-4:
+    raise RuntimeError(
+        f"gradient through the PSF convolution is wrong: autodiff={grad_autodiff}, "
+        f"finite diff={grad_finite}, rel err={grad_rel:.2e}"
+    )
 
 plot_system_observation(ctx, cfg={"output": {"save_system_plot_path": SYSTEM_PLOT_PATH}})
 
 fig, ax = plt.subplots(figsize=(3.5, 3))
 im = ax.imshow(my_kernel, origin="lower")
 fig.colorbar(im, ax=ax)
-ax.set_title("Input custom Gaussian kernel (5x5)")
+ax.set_title(f"Input kernel ({my_kernel.shape}, ss={SUPERSAMPLING})")
 fig.tight_layout()
 fig.savefig(os.path.join(OUTPUT_DIR, "kernel_input.png"), dpi=200, bbox_inches="tight")
 plt.close(fig)
@@ -174,6 +240,7 @@ for key in tp:
 
 # --- Inference: EM-only, deriv-approx, informed NUTS -----------------------------
 print("\n--- EM-only inference: deriv-approx (informed) ---\n")
+t_start = time.perf_counter()
 samples, truths = run_inference(
     ctx,
     mode="EM-only",
@@ -183,6 +250,9 @@ samples, truths = run_inference(
         "inference": {"informed": True},
     },
 )
+
+elapsed = time.perf_counter() - t_start
+print(f"\nInference wall clock: {elapsed:.1f} s (supersampling factor {SUPERSAMPLING})")
 
 corner_dir = os.path.join(OUTPUT_DIR, "deriv_approx")
 os.makedirs(corner_dir, exist_ok=True)
@@ -196,7 +266,15 @@ plot_posterior(
 )
 
 # --- Recovery table --------------------------------------------------------------
-lines = [f"{'param':<22} {'truth':>12} {'post mean':>12} {'post std':>12} {'pull':>8}"]
+header = (f"PSF: PIXEL, kernel {my_kernel.shape}, kernel_supersampling_factor={SUPERSAMPLING}, "
+          f"kwargs_numerics={kwargs_numerics}")
+lines = [
+    header,
+    f"Inference wall clock: {elapsed:.1f} s",
+    "",
+    f"{'param':<22} {'truth':>12} {'post mean':>12} {'post std':>12} {'pull':>8}",
+]
+pulls = {}
 for key in sorted(samples):
     arr = np.asarray(samples[key]).ravel()
     if key not in truths:
@@ -204,9 +282,16 @@ for key in sorted(samples):
     mean, std = float(arr.mean()), float(arr.std())
     truth = float(truths[key])
     pull = (mean - truth) / std if std > 0 else float("nan")
+    pulls[key] = pull
     lines.append(f"{key:<22} {truth:>12.5f} {mean:>12.5f} {std:>12.5f} {pull:>8.2f}")
+
+bad = {k: p for k, p in pulls.items() if np.isfinite(p) and abs(p) > 3.0}
+lines += ["", f"parameters with |pull| > 3: {sorted(bad) if bad else 'none'}"]
 print("\n".join(lines))
 with open(os.path.join(OUTPUT_DIR, "recovery.txt"), "w") as f:
     f.write("\n".join(lines) + "\n")
+
+if bad:
+    raise RuntimeError(f"posterior does not recover truth for {bad}")
 
 print(f"\nDone. Outputs under {os.path.abspath(OUTPUT_DIR)}/")

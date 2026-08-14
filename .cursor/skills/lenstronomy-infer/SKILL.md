@@ -50,6 +50,17 @@ im = ImageModel(data_class, psf_class,
                                  "supersampling_convolution": False})
 ```
 
+Default stays `supersampling_factor: 1`; raise it only with the user's agreement
+(`recommend_supersampling(cfg)` → report → wait).
+
+Mirror the ctx instead of hardcoding when gwemfish supersamples — pass
+`ctx["cfg"]["em"]["kwargs_numerics"]` straight through. lenstronomy is where
+herculens' numerics come from, so it reproduces subgrid convolution exactly
+(no PAL-style residual). A supersampled PIXEL kernel also needs
+`kernel_point_source` = the **fine** array plus the matching
+`kernel_supersampling_factor`; `ctx["lens_image"].PSF.kernel_point_source` is
+the degraded one. See the `gwemfish-simulate` skill.
+
 No array flip is needed — lenstronomy shares HCL's row-0-at-bottom layout
 (unlike PAL).
 

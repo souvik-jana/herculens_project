@@ -8,9 +8,10 @@ Deep-merged with `make_default_cfg()`. Full doc: `LENS_RECONSTRUCTION_ROOT/examp
 |-----|------|
 | `enabled` | `False` → GW-only (empty ctx from EM setup) |
 | `pixel_grid_kwargs` | `npix`, `pix_scl` |
-| `psf_kwargs` | `psf_type`, `fwhm`, `pixel_size` |
+| `psf_kwargs` | `psf_type`, `fwhm`, `pixel_size`; PIXEL also `kernel_point_source`, `kernel_supersampling_factor` |
 | `noise_simu_kwargs`, `noise_inf_kwargs` | sim vs infer noise |
-| `kwargs_numerics`, `exposure_time`, `seed` | Herculens numerics |
+| `kwargs_numerics` | `supersampling_factor`, `supersampling_convolution` — must match `kernel_supersampling_factor` (see SKILL.md) |
+| `exposure_time`, `seed` | exposure, noise RNG |
 | `source_pos` | lens solving + source center |
 | `kwargs_source`, `kwargs_lens_light` | Sersic kwargs lists |
 | `source_model_class`, `lens_light_model_class` | Herculens model factories |

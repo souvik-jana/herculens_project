@@ -45,6 +45,8 @@ noise_map, snr_map = compute_noise_snr_maps(ctx)  # model-based sigma (PAL conve
 
 Custom PSF: set `cfg["em"]["psf_kwargs"] = {"psf_type": "PIXEL", "kernel_point_source": k}` before
 `setup_em_observation`; Route 1 kernel injection is automatic. See `cfg_reference.py` → `PSF_EXAMPLES`.
+Supersampled kernels (`kernel_supersampling_factor` > 1) need matching `kwargs_numerics` — see §3a
+and the `gwemfish-simulate` skill.
 
 Examples: `examples/scripts/example_pal_mirror.py`, `example_psf_plot_and_pal.py`.
 
@@ -156,11 +158,36 @@ on a grid (no imaging pipeline) → use `intensity = amp` unscaled.
 
 ## 3. Grid & Sampling
 
-Always set `over_sample_size=1` in PAL to match gwemfish's `supersampling_factor=1`:
+Match PAL's `over_sample_size` to gwemfish's `kwargs_numerics["supersampling_factor"]` — **not** blindly to 1:
+
 ```python
-grid = al.Grid2D.uniform(shape_native=(npix, npix), pixel_scales=pix_scl, over_sample_size=1)
+ss = ctx["cfg"]["em"]["kwargs_numerics"].get("supersampling_factor", 1)
+grid = al.Grid2D.uniform(shape_native=(npix, npix), pixel_scales=pix_scl, over_sample_size=ss)
 ```
-Pixel centres coincide physically for the same `npix` and `pix_scl`.
+
+`simulate_in_pal` does this for you (`pal_bridge.make_grid`, and `over_sample_size_lp` on `dataset_gwemfish`) — hand-rolling `over_sample_size=1` against a supersampled ctx costs 25% of peak. Pixel centres coincide physically for the same `npix` and `pix_scl`.
+
+**Policy:** never raise gwemfish's `supersampling_factor` yourself to improve a PAL comparison, and never lower it to hide one. It defaults to 1; changing it is the user's decision (`recommend_supersampling` → report → wait). Mirror whatever the ctx already carries.
+
+### 3a. Supersampled convolution — the one gap PAL cannot close
+
+`over_sample_size` mirrors how finely the **light profile is evaluated**. It does *not* change where the **PSF convolution** happens: PAL always convolves at the image pixel scale via `al.Convolver`. herculens with `supersampling_convolution=True` convolves on the subgrid instead. No PAL setting reproduces that.
+
+Measured `model_max_rel_diff` (default cfg, 20×20 @ 0.4"):
+
+| gwemfish config | PAL match |
+|-----------------|-----------|
+| `supersampling_factor=1` | 5.6e-4 ✓ |
+| `supersampling_factor=2`, `supersampling_convolution` **off** | 4.1e-4 ✓ |
+| `supersampling_factor=2`, `supersampling_convolution` **on**, narrow PSF | 2.3e-2 |
+| `supersampling_factor=2`, `supersampling_convolution` **on**, broad PSF | 3.2e-2 |
+
+The residual is the convolution scale, not PSF sampling — it persists for a well-sampled PSF. So:
+
+- Cross-checking gwemfish against PAL and want it tight → run that comparison with `supersampling_convolution=False` (oversampling alone stays in budget).
+- Need subgrid convolution for the science → expect ~2-3% of peak in the PAL mirror, and a PAL fit to `dataset_gwemfish` will absorb it into the light parameters.
+
+`ctx_pal["match_stats"]["supersampling"]` records `over_sample_size`, `hcl_supersampling_convolution`, `kernel_supersampling_factor` for whatever run produced it. Budget the model residual accordingly: few×1e-3 normally, ~5e-2 when subgrid convolution is on.
 
 ---
 
@@ -248,6 +275,8 @@ psf = al.Convolver(
 ```
 Agrees to ~1.5e-3 interior (truncation + pixelisation residual).
 
+`PSF.kernel_point_source` is **always the image-scale kernel**, even when you fed a supersampled one — herculens degrades on construction and keeps the fine array separately (`kernel_point_source_supersampled(ss)`). So Route 1 injects the degraded kernel, which is right for PAL (it convolves at image scale) but is *not* what herculens used if `supersampling_convolution=True`. See §3a.
+
 ### Route 2 — matching Gaussian in PAL (kernels agree to 4e-17)
 
 ```python
@@ -329,7 +358,7 @@ tracer = al.Tracer(galaxies=[
     al.Galaxy(redshift=zl, mass=mass, light=lens_light),
     al.Galaxy(redshift=zs, light=src_light),
 ])
-grid   = al.Grid2D.uniform(shape_native=(npix,npix), pixel_scales=pix, over_sample_size=1)
+grid   = al.Grid2D.uniform(shape_native=(npix,npix), pixel_scales=pix, over_sample_size=1)  # = ctx numerics supersampling_factor, see §3
 psf    = al.Convolver.from_gaussian(shape_native=(21,21), pixel_scales=pix,
                                      sigma=fwhm/(2*np.sqrt(2*np.log(2))), normalize=True)
 sim    = al.SimulatorImaging(exposure_time=t, psf=psf,
@@ -350,6 +379,7 @@ dataset = sim.via_tracer_from(tracer=tracer, grid=grid)
 | PSF truncation/pixelisation | ~1.5e-3 (interior) |
 | Edge pixels | large — trim kernel-half-width border |
 | Solver (1e-5) on Fermat | ~2.6e-5 |
+| herculens `supersampling_convolution=True` | ~2-3e-2 — structural, PAL convolves at image scale (§3a) |
 
 Everything else is machine precision with the rules above.
 

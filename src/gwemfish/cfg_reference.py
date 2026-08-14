@@ -129,7 +129,18 @@ COMPLETE_CFG = {
         #   {"psf_type": "PIXEL", "kernel_point_source": my_kernel}
         #   my_kernel: 2D numpy array, odd shape (e.g. 5x5), centered on the peak,
         #   sum-normalized (herculens convention). Load from FITS or build by hand.
-        #   Optional kernel_supersampling_factor (default 1; >1 supported, not yet tested).
+        #
+        # Supersampled kernel (real instrument PSFs are usually delivered this way):
+        #   psf_kwargs:      {"psf_type": "PIXEL", "kernel_point_source": fine_kernel,
+        #                     "kernel_supersampling_factor": 2}
+        #   kwargs_numerics: {"supersampling_factor": 2, "supersampling_convolution": True}
+        #   kernel_supersampling_factor only declares that the array is sampled at
+        #   pix_scl / factor; herculens degrades it to pix_scl and uses the degraded
+        #   kernel unless the numerics supersample by the SAME factor with
+        #   supersampling_convolution=True. Mismatched factors are not an error:
+        #   herculens discards the supplied kernel and interpolates a replacement
+        #   (setup_em_observation warns). Fine kernel must be odd-sized;
+        #   (n_coarse - 1) * factor + 1 is a safe size.
         #
         # No convolution:
         #   {"psf_type": "NONE"}
@@ -430,7 +441,11 @@ COMPLETE_CFG = {
     # ctx_pal keys: tracer, grid, psf, dataset_pal, dataset_gwemfish, dataset_clean, match_stats, ...
     # match_stats: model_* (noiseless image), noise_map_*, noise_z_std, psf_* (kernel cross-check).
     # Set em.psf_kwargs psf_type="PIXEL" + kernel_point_source for custom/real PSFs; the same kernel
-    # is injected into PAL (Route 1). kernel_supersampling_factor > 1 is supported but not yet tested.
+    # is injected into PAL (Route 1). simulate_in_pal mirrors em.kwargs_numerics supersampling via
+    # PAL over_sample_size, so model_max_rel_diff stays at the few x 1e-3 budget for any
+    # supersampling_factor. With supersampling_convolution=True herculens convolves on the subgrid
+    # while PAL always convolves at the image pixel scale, which leaves ~2-3% of peak that no PAL
+    # setting removes (match_stats["supersampling"] records the settings in force).
     #
     # Related plot helpers (gwemfish side, before PAL): plot_system_observation (3 panels incl. S/N),
     # plot_psf, compute_noise_snr_maps(ctx) for standalone sigma/SNR arrays.
@@ -550,7 +565,10 @@ PSF_EXAMPLE_GAUSSIAN = {
 PSF_EXAMPLE_PIXEL = {
     "psf_type": "PIXEL",
     "kernel_point_source": None,  # replace with your (odd, odd) centered 2D array
-    # "kernel_supersampling_factor": 1,
+    # Kernel sampled at pix_scl / factor. Requires the matching numerics below, else
+    # the kernel is degraded to pix_scl and the extra resolution is unused:
+    #   "kwargs_numerics": {"supersampling_factor": 2, "supersampling_convolution": True}
+    # "kernel_supersampling_factor": 2,
 }
 
 PSF_EXAMPLE_NONE = {"psf_type": "NONE"}

@@ -173,14 +173,14 @@ def make_tracer_from_ctx(ctx):
     return al.Tracer(galaxies=[lens, source], cosmology=cosmo)
 
 
-def make_grid(npix, pix_scl):
+def make_grid(npix, pix_scl, over_sample_size=1):
     import autolens as al
 
     return al.Grid2D.uniform(
         shape_native=(npix, npix),
         pixel_scales=pix_scl,
         origin=(0.0, 0.0),
-        over_sample_size=1,
+        over_sample_size=over_sample_size,
         respect_small_datasets=False,
     )
 
@@ -273,8 +273,15 @@ def simulate_in_pal(ctx, seed=None):
     if seed is None:
         seed = int(em.get("seed") or 0)
 
+    # Mirror the herculens sub-pixel sampling of the light profiles. PAL still
+    # convolves at the image pixel scale, so when herculens also convolves on the
+    # subgrid (supersampling_convolution=True) a residual remains -- see
+    # ``match_stats['supersampling']``.
+    numerics = em.get("kwargs_numerics") or {}
+    over_sample = int(numerics.get("supersampling_factor", 1))
+
     tracer = make_tracer_from_ctx(ctx)
-    grid = make_grid(npix, pix_scl)
+    grid = make_grid(npix, pix_scl, over_sample_size=over_sample)
     psf = make_psf_from_hcl(ctx["lens_image"], pix_scl)
 
     dataset_clean = pal_simulate(tracer, grid, psf, exp_time, bg_rms, noise=False)
@@ -287,7 +294,7 @@ def simulate_in_pal(ctx, seed=None):
         data=al.Array2D.no_mask(values=to_pal_layout(data_hcl), pixel_scales=pix_scl),
         noise_map=al.Array2D.no_mask(values=to_pal_layout(noise_map_hcl), pixel_scales=pix_scl),
         psf=psf,
-        over_sample_size_lp=1,
+        over_sample_size_lp=over_sample,
     )
     dataset_gwemfish = dataset_gwemfish.apply_mask(
         mask=al.Mask2D.all_false(shape_native=(npix, npix), pixel_scales=pix_scl)
@@ -316,6 +323,15 @@ def simulate_in_pal(ctx, seed=None):
             np.median(np.abs(pal_noise_map - noise_map_hcl.reshape(npix, npix)) / noise_map_hcl.reshape(npix, npix))
         ),
         "noise_z_std": float(z.std()),
+        "supersampling": {
+            "over_sample_size": over_sample,
+            "hcl_supersampling_convolution": bool(
+                numerics.get("supersampling_convolution", False)
+            ),
+            "kernel_supersampling_factor": int(
+                em["psf_kwargs"].get("kernel_supersampling_factor", 1)
+            ),
+        },
     }
     match_stats.update(_psf_match_stats(ctx["lens_image"], psf))
 
