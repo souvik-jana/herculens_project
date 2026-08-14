@@ -11,7 +11,7 @@ is_background: false
 ## Before any work
 
 1. Read `LENSING_MOCK_ROOT/CONTEXT.md` and `DATA.md` (path from `gwemfish-local`, or `../lensing-mock` sibling).
-2. Load `/gwemfish-batch` skill.
+2. Load `/gwemfish-batch` skill; `/gwemfish-pal` if batch includes PAL mirror or HCL↔PAL consistency checks.
 3. For infer method/prior details, follow `gwemfish-infer` AskQuestion gate inside batch context — includes the `-source` methods (`deriv-approx-source`/`hmc-source`/`hmc-informed-source`) and `use_parameter_layout`, not just the older 6-method list.
 
 ## Workflow

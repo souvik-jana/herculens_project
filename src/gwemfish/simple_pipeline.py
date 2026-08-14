@@ -330,6 +330,10 @@ def make_default_cfg() -> Dict[str, Any]:
             # Optional suffix tag appended before extension on save.
             # e.g. "corner_{group_name}.png" + "hmc" -> "corner_{group_name}_hmc.png"
             "save_tag": None,
+            # plot_system_observation_pal (opt-in; see cfg_reference PAL mirror section)
+            "pal_plot_dataset": True,
+            "pal_plot_tracer": True,
+            "pal_dataset": "both",
         },
         "source_plane": {
             # Unused by ``to_source_plane_samples`` (image count follows ``_resolve_gw_n_images``).
@@ -346,6 +350,9 @@ def make_default_cfg() -> Dict[str, Any]:
             "save_truths_path": None,
             "save_source_samples_path": None,
             "save_system_plot_path": None,
+            "save_psf_plot_path": None,
+            "save_pal_dataset_plot_path": None,
+            "save_pal_tracer_plot_path": None,
             "json_path": None,
             # ``plot_system_observation``: ``"gw"`` (default), ``"em"``, ``"both"``, or ``"none"``.
             "system_plot_image_overlay": "gw",
@@ -2165,12 +2172,43 @@ def plot_source_posterior(
     return _plot_samples_common(samples=samples_for_plot, truths=truths, cfg=cfg)
 
 
+def compute_noise_snr_maps(ctx):
+    """Per-pixel noise sigma and S/N maps for the EM observation.
+
+    Model-based convention (matches PyAutoLens' noise map in expectation, and the
+    verified gwemfish<->PAL comparison): ``sigma = sqrt(bg_rms^2 + max(model, 0)/t_exp)``
+    with ``model`` the PSF-convolved clean image including lens light, and
+    ``snr = data / sigma`` on the noisy observation.
+
+    Returns:
+        (noise_map, snr_map) as numpy arrays in gwemfish layout (row 0 = bottom).
+    """
+    import numpy as np
+
+    if "lens_image" not in ctx or "em_obs" not in ctx:
+        raise ValueError("Missing EM context. Run `setup_em_observation(...)` first.")
+
+    em_cfg = ctx["cfg"]["em"]
+    bg_rms = float(em_cfg["noise_simu_kwargs"]["background_rms"])
+    t_exp = float(em_cfg["exposure_time"])
+    model = np.asarray(
+        ctx["lens_image"].model(
+            kwargs_lens=ctx["kwargs_lens"],
+            kwargs_source=em_cfg["kwargs_source"],
+            kwargs_lens_light=em_cfg["kwargs_lens_light"],
+        )
+    )
+    noise_map = np.sqrt(bg_rms**2 + np.clip(model, 0.0, None) / t_exp)
+    data = np.asarray(ctx["em_obs"]["data"])
+    return noise_map, data / noise_map
+
+
 def plot_system_observation(
     ctx: Dict[str, Any],
     *,
     cfg: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Plot clean and noisy EM system image with optional image-position overlays.
+    """Plot clean image, noisy observation, and S/N map with optional image overlays.
 
     Overlay mode: ``cfg['output']['system_plot_image_overlay']`` — ``"gw"`` (default,
     uses ``truth_params['image_x*']`` / ``image_y*`` or ``ctx['x_img_gw']``),
@@ -2197,6 +2235,11 @@ def plot_system_observation(
         kwargs_lens_light=kwargs_lens_light,
     )
     data = ctx["em_obs"]["data"]
+    noise_map = np.sqrt(
+        float(cfg_full["em"]["noise_simu_kwargs"]["background_rms"]) ** 2
+        + np.clip(np.asarray(image_clean), 0.0, None) / float(cfg_full["em"]["exposure_time"])
+    )
+    snr_map = np.asarray(data) / noise_map
 
     # Use sky coordinates if pixel grid is available; fallback to index axes.
     xx = yy = None
@@ -2206,22 +2249,25 @@ def plot_system_observation(
         except Exception:
             xx = yy = None
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
     if xx is not None and yy is not None:
         im1 = ax1.pcolormesh(xx, yy, np.asarray(image_clean), shading="auto")
         im2 = ax2.pcolormesh(xx, yy, np.asarray(data), shading="auto")
+        im3 = ax3.pcolormesh(xx, yy, snr_map, shading="auto")
     else:
         im1 = ax1.imshow(np.asarray(image_clean), origin="lower")
         im2 = ax2.imshow(np.asarray(data), origin="lower")
+        im3 = ax3.imshow(snr_map, origin="lower")
     fig.colorbar(im1, ax=ax1)
     fig.colorbar(im2, ax=ax2)
+    fig.colorbar(im3, ax=ax3)
 
     ax1.set_title("Clean lensing image")
     ax2.set_title("Noisy observation")
-    ax1.set_xlabel("RA [arcsec]")
-    ax1.set_ylabel("Dec [arcsec]")
-    ax2.set_xlabel("RA [arcsec]")
-    ax2.set_ylabel("Dec [arcsec]")
+    ax3.set_title("S/N map")
+    for ax in (ax1, ax2, ax3):
+        ax.set_xlabel("RA [arcsec]")
+        ax.set_ylabel("Dec [arcsec]")
 
     out_plot = cfg_full.get("output", {})
     overlay = str(out_plot.get("system_plot_image_overlay", "gw")).strip().lower()
@@ -2279,6 +2325,52 @@ def plot_system_observation(
     fig.tight_layout()
     out_cfg = cfg_full.get("output", {})
     save_path = _resolve_output_path(out_cfg.get("save_system_plot_path"), out_cfg.get("output_dir"))
+    _ensure_parent_dir(save_path)
+    if save_path:
+        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    return fig
+
+
+def plot_psf(ctx, *, cfg=None):
+    """Plot the PSF kernel used by the EM forward model (linear and log10 panels).
+
+    Works for any ``psf_type`` (GAUSSIAN, PIXEL): the kernel is read from
+    ``ctx['lens_image'].PSF.kernel_point_source``, i.e. exactly what convolves
+    the model images.
+
+    If ``cfg['output']['save_psf_plot_path']`` is set, saves the figure there
+    (resolved against ``output_dir`` like the other plot functions).
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    cfg_full = _deep_merge_dict(ctx.get("cfg", make_default_cfg()), cfg)
+
+    if "lens_image" not in ctx:
+        raise ValueError("Missing EM context. Run `setup_em_observation(...)` first.")
+
+    kernel = np.asarray(ctx["lens_image"].PSF.kernel_point_source, float)
+    pix_scl = float(cfg_full["em"]["pixel_grid_kwargs"]["pix_scl"])
+    half = kernel.shape[0] * pix_scl / 2.0
+    ext = [-half, half, -half, half]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4))
+    im1 = ax1.imshow(kernel, origin="lower", extent=ext)
+    log_kernel = np.log10(np.where(kernel > 0, kernel, np.nan))
+    im2 = ax2.imshow(log_kernel, origin="lower", extent=ext)
+    fig.colorbar(im1, ax=ax1)
+    fig.colorbar(im2, ax=ax2)
+
+    psf_type = str(cfg_full["em"]["psf_kwargs"].get("psf_type", "GAUSSIAN"))
+    ax1.set_title(f"PSF kernel ({psf_type})")
+    ax2.set_title("PSF kernel (log10)")
+    for ax in (ax1, ax2):
+        ax.set_xlabel("RA [arcsec]")
+        ax.set_ylabel("Dec [arcsec]")
+
+    fig.tight_layout()
+    out_cfg = cfg_full.get("output", {})
+    save_path = _resolve_output_path(out_cfg.get("save_psf_plot_path"), out_cfg.get("output_dir"))
     _ensure_parent_dir(save_path)
     if save_path:
         fig.savefig(save_path, bbox_inches="tight", dpi=300)

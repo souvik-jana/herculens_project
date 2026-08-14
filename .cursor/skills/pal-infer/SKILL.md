@@ -5,6 +5,11 @@ description: Simulate a gwemfish/herculens lens system, convert it to PyAutoLens
 
 # PAL infer
 
+Read `gwemfish-local` and `pal-local` under `~/.cursor/skills/` (copy from
+`.cursor/skills/*.example` in lens_reconstruction if missing). HCL↔PAL conversion
+rules: `/gwemfish-pal`. For building the PAL dataset from an existing gwemfish ctx,
+prefer `simulate_in_pal(ctx)` → `ctx_pal["dataset_gwemfish"]` before hand-rolling.
+
 Fit a gwemfish-defined lens system with PyAutoLens, end to end, using PAL's own
 model/search/analysis API. Working reference implementation:
 `comparison-analysis/case1_em_only/scripts/pal_em.py` (stages `simulate`, `fit`).
@@ -13,6 +18,10 @@ Conversion helpers live in `comparison-analysis/case1_em_only/scripts/common_cas
 **Golden rule:** simulate *once* in gwemfish, cache the arrays, and have PAL fit
 that exact array. Never let PAL re-simulate its own data for a comparison — you
 would be comparing two noise realizations, not two inference codes.
+
+**Preferred shortcut:** `simulate_in_pal(ctx)` builds `ctx_pal["dataset_gwemfish"]`
+(exact gwemfish data + model-based noise + same PSF kernel) alongside a PAL-simulated
+dataset for cross-checks. See `gwemfish-pal` skill §0 and `example_psf_plot_and_pal.py`.
 
 ## Workflow
 

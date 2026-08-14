@@ -305,4 +305,14 @@ samples, truths = run_inference(
 )
 ```
 
+## Custom PSF (simulation only)
+
+Set before `setup_em_observation`; no infer-specific cfg:
+
+```python
+cfg["em"]["psf_kwargs"] = {"psf_type": "PIXEL", "kernel_point_source": my_kernel}
+```
+
+PSF is baked into `ctx["lens_image"]` once — all methods above use it automatically. See `cfg_reference.py` → `PSF_EXAMPLES`, `example_pixel_psf_em_only.py`.
+
 See [reference.md](reference.md) for full method/mode table and nautilus cfg keys.

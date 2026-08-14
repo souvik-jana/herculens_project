@@ -12,7 +12,22 @@ is_background: false
 
 1. Read repo `AGENTS.md` if in lens_reconstruction; else read `gwemfish-local` skill for paths.
 2. Start from `src/gwemfish/cfg_reference.py` (canonical, fully-commented cfg dict; importable as `from gwemfish.cfg_reference import COMPLETE_CFG, get_cfg`; `scripts/cfg.py` and `examples/scripts/cfg.py` are compatibility symlinks to it) — grep the closest `examples/scripts/` file only for narrower copy-paste patterns, do not invent patterns.
-3. Load skills: `/gwemfish-simulate`, `/gwemfish-infer`, `/gwemfish-plot`. Load `/gwemfish-pal` on demand only (see routing table) — not unconditionally.
+3. Load skills: `/gwemfish-simulate`, `/gwemfish-infer`, `/gwemfish-plot`. Load `/gwemfish-pal` when PAL mirror, HCL↔PAL conversion, or cross-framework checks are in scope (see routing table).
+
+## Optional post-sim (not part of infer)
+
+After `setup_em_observation` (+ GW if needed), user may request diagnostics before or instead of inference:
+
+| Step | API | Skill |
+|------|-----|-------|
+| System figure (clean / noisy / S/N) | `plot_system_observation(ctx, cfg)` | `gwemfish-plot` |
+| PSF kernel figure | `plot_psf(ctx, cfg)` | `gwemfish-plot` |
+| Model-based noise/SNR arrays | `compute_noise_snr_maps(ctx)` | `gwemfish-plot` |
+| PAL mirror | `simulate_in_pal` → `plot_system_observation_pal` → `save_pal_outputs` | `gwemfish-pal` |
+
+Custom PSF: `cfg["em"]["psf_kwargs"] = {"psf_type": "PIXEL", "kernel_point_source": k}` before EM setup — see `cfg_reference.py` → `PSF_EXAMPLES`, `example_pixel_psf.py`. PSF is fixed in `ctx["lens_image"]`; all inference methods use it unchanged.
+
+Cfg keys: `cfg["output"]["save_system_plot_path"]`, `save_psf_plot_path`, `save_pal_*`; `cfg["plot"]["pal_*"]` for PAL subplots. See `SIMPLE_PIPELINE_CONFIG.md`.
 
 ## Inference gate (mandatory)
 
@@ -36,8 +51,8 @@ simulate → set priors → infer → plot → optional source plane
 |------|-------|
 | Build ctx / simulate EM+GW system | `gwemfish-simulate` |
 | Choose mode/method/priors, run inference | `gwemfish-infer` |
-| Corner plots, source-plane plots, method-comparison overlays | `gwemfish-plot` |
-| Convert gwemfish/herculens params to/from PyAutoLens, diagnose HCL-vs-PAL mismatches | `gwemfish-pal` |
+| Corner plots, source-plane plots, system/PSF/SNR plots, method-comparison overlays | `gwemfish-plot` |
+| PAL mirror (`pal_bridge`), HCL↔PAL conversion, cross-framework match_stats | `gwemfish-pal` |
 | Multi-sim YAML / batch studies | redirect to `/gwemfish-batch` agent |
 
 ## Nautilus EM-only

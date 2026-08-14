@@ -1,6 +1,8 @@
 # Simple pipeline configuration (`gwemfish.simple_pipeline`)
 
-This document describes the `cfg` dictionary passed to `setup_em_observation`, `setup_gw_observation`, `run_inference`, `plot_posterior`, `to_source_plane_samples`, and `plot_source_posterior`.
+This document describes the `cfg` dictionary passed to `setup_em_observation`, `setup_gw_observation`, `run_inference`, `plot_posterior`, `to_source_plane_samples`, and `plot_source_posterior`, plus optional plotting helpers (`plot_system_observation`, `plot_psf`, `plot_system_observation_pal`) that read `cfg["plot"]` / `cfg["output"]`.
+
+For every key and comment, prefer **`src/gwemfish/cfg_reference.py`** (`COMPLETE_CFG`); this file is a shorter overview.
 
 Values are **deep-merged** with `make_default_cfg()` (see `gwemfish/simple_pipeline.py`). You only need to override what you change.
 
@@ -44,7 +46,29 @@ Electromagnetic simulation and inference setup.
 | Key | Role |
 |-----|------|
 | `enabled` | If `False`, `setup_em_observation` returns `{}` (GW-only workflows). |
-| `pixel_grid_kwargs`, `psf_kwargs` | Grid and PSF for `simulate_em`. |
+| `pixel_grid_kwargs`, `psf_kwargs` | Grid and PSF for `simulate_em` (see **Custom PSF** below). |
+
+#### Custom PSF
+
+Default is a Gaussian via `psf_kwargs = {"psf_type": "GAUSSIAN", "fwhm": ..., "pixel_size": ...}`.
+
+For an instrument or hand-built kernel, set **`psf_type": "PIXEL"`** and pass **`kernel_point_source`**: a centered, odd-sized 2D numpy array (typically sum-normalized). Optional `kernel_supersampling_factor` (default `1`).
+
+```python
+import numpy as np
+
+cfg = make_default_cfg()
+my_kernel = np.load("instrument_psf.npy")  # or build in-script
+cfg["em"]["psf_kwargs"] = {
+    "psf_type": "PIXEL",
+    "kernel_point_source": my_kernel,
+}
+ctx = setup_em_observation(cfg=cfg)
+```
+
+The PSF is fixed in `ctx["lens_image"]` at setup and used for all inference methods. Verify with `plot_psf(ctx)` or `ctx["lens_image"].PSF.kernel_point_source`.
+
+Examples: `examples/scripts/example_pixel_psf.py`, `example_psf_plot_and_pal.py`, `example_pixel_psf_em_only.py`. Full reference: `cfg_reference.py` → `PSF_EXAMPLES`.
 | `noise_simu_kwargs`, `noise_inf_kwargs` | Noise for simulation vs inference. |
 | `kwargs_numerics`, `exposure_time`, `seed` | Herculens numerics and exposure. |
 | `source_pos` | Used with source light center for lens solving. |
@@ -147,7 +171,7 @@ Controls MCMC / Fisher and Hessian-informed sampling.
 
 ### `plot`
 
-Corner and summary plots (`plot_posterior`, `plot_source_posterior`).
+Corner plots (`plot_posterior`, `plot_source_posterior`) and optional PAL mirror figures (`plot_system_observation_pal`).
 
 | Key | Role |
 |-----|------|
@@ -156,6 +180,8 @@ Corner and summary plots (`plot_posterior`, `plot_source_posterior`).
 | `hist_kwargs` | Passed to `corner.corner(..., hist_kwargs=...)` (e.g. `{"density": true}`). |
 | `params_to_plot` | For `combined` / `subset` modes. |
 | `figsize`, `save_path`, `save_tag` | Saving; `save_tag` is appended before the file extension. |
+| `pal_plot_dataset`, `pal_plot_tracer` | Booleans for `plot_system_observation_pal` (default both `True`). |
+| `pal_dataset` | `"pal"` \| `"gwemfish"` \| `"both"` — which PAL `Imaging` dataset to subplot. |
 
 ### `source_plane`
 
@@ -174,11 +200,30 @@ Used by `to_source_plane_samples`.
 |-----|------|
 | `output_dir` | Base directory for relative paths. |
 | `save_samples_path`, `save_truths_path`, `save_source_samples_path` | Optional `.npz` dumps. |
-| `save_system_plot_path` | EM system figure for `plot_system_observation`. |
+| `save_system_plot_path` | Three-panel figure from `plot_system_observation`: clean image, noisy data, S/N map. |
+| `save_psf_plot_path` | PSF kernel figure from `plot_psf` (linear + log10). |
+| `save_pal_dataset_plot_path`, `save_pal_tracer_plot_path` | PAL mirror figures from `plot_system_observation_pal` (opt-in; `None` = display only). |
+| `system_plot_image_overlay` | Image markers on system plot: `"gw"` (default), `"em"`, `"both"`, or `"none"`. |
 | `json_path` | Basename or path for pipeline JSON (merged setup + samples). |
 | `json_tag` | Suffix tag for JSON (and related naming), e.g. method name. |
 
 Legacy aliases: `save_pipeline_json_path`, `save_pipeline_json_tag`.
+
+### PAL mirror (opt-in, not part of `run_inference`)
+
+After `setup_em_observation` (and optionally GW):
+
+```python
+from gwemfish import simulate_in_pal, plot_system_observation_pal, save_pal_outputs
+
+ctx_pal = simulate_in_pal(ctx)
+plot_system_observation_pal(ctx_pal, cfg=cfg)  # uses cfg["plot"]["pal_*"] and output save paths
+save_pal_outputs(ctx_pal, out_dir)             # FITS + tracer.json only
+```
+
+`ctx_pal["match_stats"]` reports cross-framework checks (model, noise map, PSF kernel). See `examples/scripts/example_psf_plot_and_pal.py`.
+
+Other gwemfish plot helpers: `plot_system_observation(ctx)`, `plot_psf(ctx)`, `compute_noise_snr_maps(ctx)`.
 
 ---
 
@@ -311,6 +356,9 @@ cfg = {
         "figsize": None,
         "save_path": None,
         "save_tag": None,
+        "pal_plot_dataset": True,
+        "pal_plot_tracer": True,
+        "pal_dataset": "both",
     },
     "source_plane": {
         "n_images": 4,
@@ -325,8 +373,12 @@ cfg = {
         "save_truths_path": None,
         "save_source_samples_path": None,
         "save_system_plot_path": None,
+        "save_psf_plot_path": None,
+        "save_pal_dataset_plot_path": None,
+        "save_pal_tracer_plot_path": None,
         "json_path": "pipeline_outputs.json",
         "json_tag": None,
+        "system_plot_image_overlay": "gw",
     },
     "nautilus": {
         "n_live": 1000,

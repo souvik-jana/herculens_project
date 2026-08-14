@@ -86,6 +86,8 @@ from .simple_pipeline import (
     run_inference,
     plot_posterior,
     plot_system_observation,
+    plot_psf,
+    compute_noise_snr_maps,
     plot_lens_system_with_source_localization,
     plot_lens_system_with_source_local_setup,
     plot_source_plane_caustic_with_localization,
@@ -96,6 +98,9 @@ from .simple_pipeline import (
     deep_merge_cfg,
     to_serializable,
 )
+
+# Opt-in ctx -> PyAutoLens bridge (autolens imported lazily inside the functions)
+from .pal_bridge import simulate_in_pal, save_pal_outputs, plot_system_observation_pal
 
 __all__ = [
     'setup_lens',
@@ -151,6 +156,8 @@ __all__ = [
     'run_inference',
     'plot_posterior',
     'plot_system_observation',
+    'plot_psf',
+    'compute_noise_snr_maps',
     'plot_lens_system_with_source_localization',
     'plot_lens_system_with_source_local_setup',
     'plot_source_plane_caustic_with_localization',
@@ -160,6 +167,9 @@ __all__ = [
     'make_default_cfg',
     'deep_merge_cfg',
     'to_serializable',
+    'simulate_in_pal',
+    'save_pal_outputs',
+    'plot_system_observation_pal',
     # EM-only model
     'ProbModel_EM_only',
     # Flexible layout (lens0_*, source0_*, light0_*) + profile priors

@@ -34,7 +34,7 @@ Usage:
     my_cfg = deep_merge_cfg(COMPLETE_CFG, {"inference": {"num_warmup": 2000}})
 
 Or, more commonly, just copy the relevant block(s) below (e.g. the "nautilus"
-block, or one side of PRIORS_EXAMPLES) straight into your own script's cfg
+block, PSF_EXAMPLES, or one side of PRIORS_EXAMPLES) straight into your own script's cfg
 dict and delete everything else -- COMPLETE_CFG is not meant to be passed to
 `run_inference` wholesale (some sibling keys are mutually exclusive, e.g.
 `gw.use_mst`/`gw.k_mst` vs the preferred top-level `mst` block; `nautilus` is
@@ -55,7 +55,8 @@ Source of truth for all of this: `src/gwemfish/simple_pipeline.py`
 (`make_default_cfg`, `run_inference`, `_build_inference_probmodel`,
 `_build_inference_probmodel_source_plane`), `src/gwemfish/nautilus_common.py`,
 `src/gwemfish/nautilus_source_inference.py`, `src/gwemfish/nautilus_image_inference.py`,
-`src/gwemfish/parameter_layout.py`, `src/gwemfish/config.py`, `src/gwemfish/priors.py`.
+`src/gwemfish/parameter_layout.py`, `src/gwemfish/config.py`, `src/gwemfish/priors.py`,
+`src/gwemfish/pal_bridge.py` (opt-in PAL mirror: simulate_in_pal, plot_system_observation_pal).
 """
 
 from copy import deepcopy
@@ -118,10 +119,24 @@ COMPLETE_CFG = {
         "enabled": True,  # bool. False => setup_em_observation returns {} (skip EM entirely,
                            # e.g. for a pure GW-only run). Mirror with mode='GW-only'.
         "pixel_grid_kwargs": {"npix": 20, "pix_scl": 0.4},   # dict -> setup_pixel_grid(**...)
-        # dict -> setup_psf(**...). psf_type: "GAUSSIAN" (fwhm, pixel_size), "PIXEL"
-        # (kernel_point_source: centered odd-sized 2D array, e.g. a real instrument PSF;
-        # optional kernel_supersampling_factor), or "NONE". Optional truncation (sigma
-        # units) for GAUSSIAN.
+        # dict -> setup_psf(**...) -> ctx["lens_image"].PSF (fixed for the whole run).
+        #
+        # Default (Gaussian):
+        #   {"psf_type": "GAUSSIAN", "fwhm": 0.2, "pixel_size": 0.4}
+        #   fwhm [arcsec], pixel_size [arcsec]; optional truncation (sigma units).
+        #
+        # Custom / instrument PSF (PIXEL):
+        #   {"psf_type": "PIXEL", "kernel_point_source": my_kernel}
+        #   my_kernel: 2D numpy array, odd shape (e.g. 5x5), centered on the peak,
+        #   sum-normalized (herculens convention). Load from FITS or build by hand.
+        #   Optional kernel_supersampling_factor (default 1; >1 supported, not yet tested).
+        #
+        # No convolution:
+        #   {"psf_type": "NONE"}
+        #
+        # See PSF_EXAMPLES below and examples/scripts/example_pixel_psf.py,
+        # example_psf_plot_and_pal.py. Verify with plot_psf(ctx) or
+        # ctx["lens_image"].PSF.kernel_point_source after setup_em_observation.
         "psf_kwargs": {"psf_type": "GAUSSIAN", "fwhm": 0.2, "pixel_size": 0.4},
         "noise_simu_kwargs": {"npix": 20, "background_rms": 1e-2, "exposure_time": 1e3},
         # Inference-time noise: background_rms=None means it gets SAMPLED (noise_sigma_bkg prior)
@@ -346,6 +361,13 @@ COMPLETE_CFG = {
         # str or None. Suffix appended before the file extension, e.g.
         # "corner_{group_name}.png" + "hmc" -> "corner_{group_name}_hmc.png".
         "save_tag": None,
+        # --- plot_system_observation_pal(ctx_pal, cfg=...) (opt-in PAL mirror; not run_inference) ---
+        # Defaults: plot both dataset subplots + tracer; save only if output save_pal_* paths set.
+        "pal_plot_dataset": True,   # bool. aplt.subplot_imaging_dataset on ctx_pal datasets.
+        "pal_plot_tracer": True,    # bool. aplt.subplot_tracer on ctx_pal['tracer'].
+        "pal_dataset": "both",      # "pal" | "gwemfish" | "both". Which Imaging to subplot.
+                                    # "pal" = PAL-simulated noise; "gwemfish" = exact gwemfish arrays
+                                    # wrapped for a later PAL fit (pal-infer golden rule).
     },
 
     # ---- cfg["source_plane"]: to_source_plane_samples() controls (image-plane -> source-plane
@@ -372,7 +394,13 @@ COMPLETE_CFG = {
         "save_truths_path": None,        # str or None, .npz. Same auto-tagging as above.
         "save_source_samples_path": None,  # str or None, .npz. Used by to_source_plane_samples's
                                             # caller convention (not written by run_inference itself).
-        "save_system_plot_path": None,   # str or None, .png. plot_system_observation() output.
+        "save_system_plot_path": None,   # str or None, .png. plot_system_observation(): clean |
+                                          # noisy | S/N map (3 panels) + optional image overlays.
+        "save_psf_plot_path": None,      # str or None, .png. plot_psf(): PSF kernel linear+log10.
+        # PAL mirror (opt-in, after simulate_in_pal): plot_system_observation_pal() output.
+        # None => display only; str => save PNG(s) under output_dir (dirname of path used).
+        "save_pal_dataset_plot_path": None,  # saves dataset_subplot_pal / _gwemfish when pal_dataset="both"
+        "save_pal_tracer_plot_path": None,
         "json_path": None,  # str or None. Pipeline JSON (injection + setup + samples + truths).
                             # Same auto-method-tagging as save_samples_path/save_truths_path
                             # inside run_inference. Legacy alias: "save_pipeline_json_path".
@@ -392,6 +420,20 @@ COMPLETE_CFG = {
         # overlays image markers for.
         "system_plot_image_overlay": "gw",
     },
+
+    # ---- Opt-in PAL mirror (NOT part of setup_em_observation / run_inference) -------------------
+    # After EM (+ optional GW) simulation:
+    #   ctx_pal = simulate_in_pal(ctx)              # gwemfish.pal_bridge; lazy autolens import
+    #   plot_system_observation_pal(ctx_pal, cfg=CFG)  # reads cfg["plot"]["pal_*"] + output save paths
+    #   save_pal_outputs(ctx_pal, out_dir)          # data.fits, psf.fits, noise_map.fits, tracer.json
+    #
+    # ctx_pal keys: tracer, grid, psf, dataset_pal, dataset_gwemfish, dataset_clean, match_stats, ...
+    # match_stats: model_* (noiseless image), noise_map_*, noise_z_std, psf_* (kernel cross-check).
+    # Set em.psf_kwargs psf_type="PIXEL" + kernel_point_source for custom/real PSFs; the same kernel
+    # is injected into PAL (Route 1). kernel_supersampling_factor > 1 is supported but not yet tested.
+    #
+    # Related plot helpers (gwemfish side, before PAL): plot_system_observation (3 panels incl. S/N),
+    # plot_psf, compute_noise_snr_maps(ctx) for standalone sigma/SNR arrays.
 
     # ---- cfg["use_parameter_layout"]: flat-name convention switch (all modes, all methods) --------
     # bool. False (default) = legacy hardcoded single-main-lens flat names (lens_theta_E, lens_e1,
@@ -457,6 +499,61 @@ COMPLETE_CFG = {
                                         # (does not raise) suggesting finer solver grid settings.
     },
 }
+
+
+# ---------------------------------------------------------------------------
+# PSF_EXAMPLES
+#
+# Override cfg["em"]["psf_kwargs"] before setup_em_observation. The PSF is baked
+# into ctx["lens_image"] once at setup and applies to simulation and inference
+# (all mode/method combinations). For PAL mirror runs, the same kernel is passed
+# through simulate_in_pal (see PAL mirror comment block in COMPLETE_CFG).
+#
+# Minimal PIXEL override in a script:
+#
+#   import numpy as np
+#   from gwemfish.simple_pipeline import make_default_cfg, setup_em_observation
+#
+#   cfg = make_default_cfg()
+#   my_kernel = np.load("instrument_psf.npy")   # or build / read from FITS
+#   cfg["em"]["psf_kwargs"] = {
+#       "psf_type": "PIXEL",
+#       "kernel_point_source": my_kernel,
+#   }
+#   ctx = setup_em_observation(cfg=cfg)
+#   # optional: from gwemfish import plot_psf; plot_psf(ctx, cfg={"output": {"save_psf_plot_path": "psf.png"}})
+#
+# Kernel requirements (herculens PIXEL PSF):
+#   - 2D array, odd size on both axes (e.g. 5x5, 11x11)
+#   - centered: peak at array center
+#   - typically sum(my_kernel) == 1
+#
+# Hand-built Gaussian stand-in (see example_psf_plot_and_pal.py):
+#
+#   pix_scl = cfg["em"]["pixel_grid_kwargs"]["pix_scl"]
+#   fwhm = 0.2
+#   sigma_px = fwhm / (2 * np.sqrt(2 * np.log(2))) / pix_scl
+#   half = 2
+#   y, x = np.mgrid[-half:half + 1, -half:half + 1]
+#   k = np.exp(-(x**2 + y**2) / (2 * sigma_px**2))
+#   my_kernel = k / k.sum()
+#   cfg["em"]["psf_kwargs"] = {"psf_type": "PIXEL", "kernel_point_source": my_kernel}
+# ---------------------------------------------------------------------------
+
+PSF_EXAMPLE_GAUSSIAN = {
+    "psf_type": "GAUSSIAN",
+    "fwhm": 0.2,
+    "pixel_size": 0.4,
+    # "truncation": 3.0,  # optional, sigma units
+}
+
+PSF_EXAMPLE_PIXEL = {
+    "psf_type": "PIXEL",
+    "kernel_point_source": None,  # replace with your (odd, odd) centered 2D array
+    # "kernel_supersampling_factor": 1,
+}
+
+PSF_EXAMPLE_NONE = {"psf_type": "NONE"}
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +686,7 @@ CFG = {
         "enabled": True,
         # If omitted in your own cfg, pipeline uses package defaults.
         "pixel_grid_kwargs": {"npix": 20, "pix_scl": 0.4},
+        # psf_type: GAUSSIAN | PIXEL (kernel_point_source) | NONE
         "psf_kwargs": {"psf_type": "GAUSSIAN", "fwhm": 0.2, "pixel_size": 0.4},
         "noise_simu_kwargs": {"npix": 20, "background_rms": 0.005, "exposure_time": 1000},
         "noise_inf_kwargs": {"npix": 20, "background_rms": None, "exposure_time": 1000},
@@ -702,6 +800,10 @@ CFG = {
         "save_path": None,
         # Optional suffix tag appended before extension.
         "save_tag": None,
+        # plot_system_observation_pal (opt-in PAL mirror)
+        "pal_plot_dataset": True,
+        "pal_plot_tracer": True,
+        "pal_dataset": "both",
     },
     "source_plane": {
         "n_images": 4,
@@ -716,9 +818,13 @@ CFG = {
         "save_truths_path": None,
         "save_source_samples_path": None,
         "save_system_plot_path": None,
+        "save_psf_plot_path": None,
+        "save_pal_dataset_plot_path": None,
+        "save_pal_tracer_plot_path": None,
         "json_path": None,
         # Optional suffix tag appended to json_path.
         "json_tag": None,
+        "system_plot_image_overlay": "gw",
     },
 }
 
