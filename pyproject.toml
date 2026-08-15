@@ -52,3 +52,8 @@ required-environments = [
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
     "sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]

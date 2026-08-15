@@ -190,9 +190,11 @@ else:
     print(f"Kernel round-trip max diff: {np.max(np.abs(kernel_used - my_kernel)):.3e}")
 
 
-# NUTS differentiates the whole PSF path, and with supersampled numerics that path
-# runs through SubgridKernelConvolution (average-pool binning + split-kernel sum).
-# Validate the gradient against a central difference before spending time sampling.
+# deriv-approx samples a Taylor/banana surrogate, so NUTS itself never touches the image
+# model -- but the Fisher Hessian that builds the surrogate differentiates the whole PSF
+# path, and with supersampled numerics that path runs through SubgridKernelConvolution
+# (average-pool binning + split-kernel sum). Validate the gradient against a central
+# difference before spending time on that Hessian.
 def model_sum(theta_E):
     kwargs_lens = [dict(kw) for kw in ctx["kwargs_lens"]]
     kwargs_lens[0]["theta_E"] = theta_E
