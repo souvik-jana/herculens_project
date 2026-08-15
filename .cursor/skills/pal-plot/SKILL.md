@@ -5,6 +5,11 @@ description: Plot with the PyAutoLens plotting API - arrays, imaging datasets, t
 
 # PAL plot
 
+Read `pal-local` (`~/.cursor/skills/pal-local/`; copy from
+`lens_reconstruction/.cursor/skills/pal-local.example` if missing) for workspace
+paths. gwemfish ctx → PAL figures without hand-rolling: `plot_system_observation_pal`
+(`gwemfish-pal` §0).
+
 PyAutoLens plotting. **The API is the new standalone-function API.** The old
 `*Plotter` classes, `MatPlot2D` and `Visuals2D` are **removed** — if you write
 `aplt.ImagingPlotter(...)` or `MatPlot2D(...)` it will fail. Canonical reference:
@@ -16,7 +21,8 @@ PyAutoLens plotting. **The API is the new standalone-function API.** The old
 | You are plotting | Use |
 |---|---|
 | posterior samples / corners from gwemfish | `gwemfish-plot` |
-| gwemfish system observation, source plane | `gwemfish-plot` |
+| gwemfish system observation (clean / noisy / S/N), PSF plot | `gwemfish-plot` |
+| PAL mirror dataset/tracer from gwemfish ctx | `gwemfish-plot` + `gwemfish-pal` (`plot_system_observation_pal`) |
 | any 2D array, dataset, tracer, fit **rendered by PAL** | **this skill** |
 | gwemfish arrays you want in PAL styling | **this skill**, "gwemfish arrays" below |
 | lenstronomy model images | plot the raw array via `aplt.plot_array` (this skill) |

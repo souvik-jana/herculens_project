@@ -12,8 +12,9 @@ Read `gwemfish-local` (`~/.cursor/skills/gwemfish-local/`) for repo paths if set
 | You are plotting | Use |
 |---|---|
 | posterior corners, source plane, method overlays | **this skill** |
-| gwemfish system observation (clean/noisy + image overlays) | **this skill** |
-| noise map / SNR map from a gwemfish ctx | **this skill**, "Noise and SNR maps" |
+| gwemfish system observation (clean / noisy / S/N + image overlays) | **this skill** |
+| PSF kernel plot, model-based noise/SNR arrays | **this skill**, "Noise and SNR maps" |
+| PAL mirror dataset/tracer subplots from gwemfish ctx | **this skill**, "PAL mirror plots" |
 | any array rendered in PAL styling, PAL datasets/tracers/fits, .fits I/O | `pal-plot` |
 | building a PAL dataset/model or running the PAL fit | `pal-infer` |
 
@@ -40,7 +41,10 @@ Practical defaults:
 |----------|-------|---------|
 | `plot_posterior(samples, truths, cfg)` | image-plane samples | Corners; `plot_mode`: groupwise / combined / subset |
 | `plot_source_posterior(source_out, truths, cfg)` | `to_source_plane_samples` output | Source-plane corners |
-| `plot_system_observation(ctx, cfg)` | ctx after EM setup | Clean/noisy image + image overlays |
+| `plot_system_observation(ctx, cfg)` | ctx after EM setup | Clean / noisy / S/N map (3 panels) + image overlays |
+| `plot_psf(ctx, cfg)` | ctx after EM setup | PSF kernel (linear + log10) |
+| `compute_noise_snr_maps(ctx)` | ctx after EM setup | Model-based `(noise_map, snr_map)` arrays |
+| `plot_system_observation_pal(ctx_pal, cfg)` | after `simulate_in_pal` | PAL dataset + tracer subplots |
 | `plot_lens_system_with_source_localization` | ctx + samples | Lens geometry + localization |
 | `plot_lens_system_with_source_local_setup` | ctx + setup | Localization from setup |
 | `plot_source_plane_caustic_with_localization` | ctx | Caustic + GW source |
@@ -58,8 +62,13 @@ Practical defaults:
 | `hist_kwargs` | e.g. `{"density": True}` |
 | `params_to_plot` | combined/subset param list |
 | `save_path`, `save_tag`, `figsize` | saving |
+| `pal_plot_dataset`, `pal_plot_tracer`, `pal_dataset` | `plot_system_observation_pal` only |
 
 Resolve paths via `cfg["output"]["output_dir"]`. Pattern: `save_path="image_plane_corner_{group_name}.png"`.
+
+Output keys for observation/PSF/PAL plots: `save_system_plot_path`, `save_psf_plot_path`, `save_pal_dataset_plot_path`, `save_pal_tracer_plot_path`.
+
+All accept a bare filename (resolved under `output_dir`, or the cwd when that is unset) or a full path. One asymmetry: `save_pal_dataset_plot_path` uses only the directory and writes `dataset_subplot_pal` / `dataset_subplot_gwemfish`, because `pal_dataset="both"` yields two files from one setting. `save_pal_tracer_plot_path` does honour the basename — `aplt.subplot_tracer` has no `output_filename` argument (unlike `subplot_imaging_dataset`) and always writes `tracer.png`, so `plot_system_observation_pal` renames it afterwards.
 
 ## Source plane workflow
 
@@ -98,34 +107,45 @@ Use `source_out["source_plane_samples_plot"]` if passing dict from `to_source_pl
 
 ## Noise and SNR maps
 
-`plot_system_observation` gives clean + noisy panels only — it does **not**
-produce noise or SNR maps. Build them from the ctx:
+`plot_system_observation` already includes a third **S/N panel** (model-based sigma:
+`sqrt(bg_rms² + max(model,0)/t_exp)`). For standalone arrays or custom figures:
 
 ```python
-data  = np.asarray(ctx["em_obs"]["data"])
-bg    = ctx["cfg"]["em"]["noise_simu_kwargs"]["background_rms"]
-t_exp = ctx["cfg"]["em"]["exposure_time"]
-sigma = np.sqrt(bg**2 + np.maximum(data, 0.0) / t_exp)   # data-based sigma map
-snr   = data / sigma
+from gwemfish import compute_noise_snr_maps, plot_psf
+
+noise_map, snr_map = compute_noise_snr_maps(ctx)
+plot_psf(ctx, cfg={"output": {"save_psf_plot_path": "psf.png"}})
 ```
 
-`sigma` here is the data-based estimate of the HCL variance model; gwemfish's
-own inference uses the model-based `C_D(model)`, so quote which one you plotted.
+This matches the PAL convention used in `simulate_in_pal` / `pal_bridge` (not a
+data-only Poisson estimate from `data` alone).
 
-Render either with plain matplotlib (`origin="lower"`, HCL layout) **or** with
-PAL styling — the latter is usually what you want for a paper figure:
+Render with plain matplotlib (`origin="lower"`, HCL layout) **or** PAL styling:
 
 ```python
-# PAL rendering of gwemfish arrays: flipud + Array2D.no_mask
 a2d = al.Array2D.no_mask(values=np.flipud(sigma), pixel_scales=PIX_SCL)
 aplt.plot_array(a2d, title="noise map (sigma)",
                 output_path=str(PLOTS), output_filename="sim_noise_map",
                 output_format="png")
 ```
 
-See `pal-plot` for the full PAL rendering path, and note that if you build a
-real `al.Imaging` from these arrays you get `dataset.signal_to_noise_map` for
-free instead of computing `snr` by hand.
+See `pal-plot` for full PAL rendering. If you build a real `al.Imaging` from
+these arrays you get `dataset.signal_to_noise_map` for free.
+
+## PAL mirror plots
+
+After gwemfish simulation (opt-in, not part of `run_inference`):
+
+```python
+from gwemfish import simulate_in_pal, plot_system_observation_pal, save_pal_outputs
+
+ctx_pal = simulate_in_pal(ctx)
+plot_system_observation_pal(ctx_pal, cfg=cfg)  # cfg["plot"]["pal_*"], output save paths
+save_pal_outputs(ctx_pal, out_dir)             # FITS + tracer.json only
+# writes data_{gwemfish,pal}.fits (+ psf_*/noise_map_*); dataset="gwemfish"|"pal" narrows it
+```
+
+Examples: `example_pal_mirror.py`, `example_psf_plot_and_pal.py`.
 
 ## Multi-method comparison
 

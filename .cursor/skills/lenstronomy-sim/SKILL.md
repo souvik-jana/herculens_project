@@ -203,6 +203,16 @@ im = ImageModel(data_class, psf,
 model = im.image(KWARGS_LENS, [ks], [kll])        # noiseless
 ```
 
+Default stays `supersampling_factor: 1`. Suggest a change via
+`recommend_supersampling(cfg)` and wait for the user — don't raise it unasked.
+
+Rebuilding a gwemfish system that supersamples? Pass its
+`ctx["cfg"]["em"]["kwargs_numerics"]` through unchanged rather than the literal
+above. herculens' numerics are lenstronomy's, so subgrid convolution reproduces
+exactly. For a supersampled PIXEL kernel give lenstronomy the **fine** array with
+`kernel_supersampling_factor` — `PSF.kernel_point_source` on the ctx is already
+degraded. See the `gwemfish-simulate` skill.
+
 ### Use the analytic Gaussian PSF, not the cached kernel
 
 Measured against gwemfish's own noiseless model on the poster mock:

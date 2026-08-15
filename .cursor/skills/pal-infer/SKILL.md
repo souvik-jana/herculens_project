@@ -5,6 +5,11 @@ description: Simulate a gwemfish/herculens lens system, convert it to PyAutoLens
 
 # PAL infer
 
+Read `gwemfish-local` and `pal-local` under `~/.cursor/skills/` (copy from
+`.cursor/skills/*.example` in lens_reconstruction if missing). HCL↔PAL conversion
+rules: `/gwemfish-pal`. For building the PAL dataset from an existing gwemfish ctx,
+prefer `simulate_in_pal(ctx)` → `ctx_pal["dataset_gwemfish"]` before hand-rolling.
+
 Fit a gwemfish-defined lens system with PyAutoLens, end to end, using PAL's own
 model/search/analysis API. Working reference implementation:
 `comparison-analysis/case1_em_only/scripts/pal_em.py` (stages `simulate`, `fit`).
@@ -13,6 +18,10 @@ Conversion helpers live in `comparison-analysis/case1_em_only/scripts/common_cas
 **Golden rule:** simulate *once* in gwemfish, cache the arrays, and have PAL fit
 that exact array. Never let PAL re-simulate its own data for a comparison — you
 would be comparing two noise realizations, not two inference codes.
+
+**Preferred shortcut:** `simulate_in_pal(ctx)` builds `ctx_pal["dataset_gwemfish"]`
+(exact gwemfish data + model-based noise + same PSF kernel) alongside a PAL-simulated
+dataset for cross-checks. See `gwemfish-pal` skill §0 and `example_psf_plot_and_pal.py`.
 
 ## Workflow
 
@@ -45,6 +54,10 @@ would be comparing two noise realizations, not two inference codes.
 | `gamma1, gamma2` | shear `gamma_1, gamma_2` | identical |
 | 2D array (row 0 = bottom) | (row 0 = top) | `np.flipud` (own inverse) |
 
+Beyond EPL + shear (SIE, SIS, NIE, CONVERGENCE, POINT_MASS, MULTIPOLE, PIEMD, DPIE,
+SHEAR_GAMMA_PSI): use `pal_bridge.MASS_PROFILE_BUILDERS` rather than deriving the rule —
+see the `gwemfish-pal` skill §1f for the verified table.
+
 Inverse (samples PAL -> HCL), what you save for comparison:
 
 ```python
@@ -62,11 +75,18 @@ dataset = al.Imaging(
     noise_map=al.Array2D.no_mask(values=to_pal_layout(em["sigma"]), pixel_scales=PIX_SCL),
     psf=al.Kernel2D.no_mask(values=np.flipud(em["psf_kernel"]),
                             pixel_scales=PIX_SCL, normalize=True),
-    over_sample_size_lp=1,          # match gwemfish: no extra oversampling
+    over_sample_size_lp=1,          # = gwemfish kwargs_numerics["supersampling_factor"]
 )
 dataset = dataset.apply_mask(mask=al.Mask2D.all_false(
     shape_native=(NPIX, NPIX), pixel_scales=PIX_SCL))   # fit all pixels
+```
 
+`over_sample_size_lp` must track the ctx, not be pinned at 1 — a supersampled gwemfish
+mock fitted with `over_sample_size_lp=1` costs 25% of peak in model mismatch, which the
+fit absorbs into the light parameters. `simulate_in_pal` already sets it correctly on
+`ctx_pal["dataset_gwemfish"]`; prefer that dataset over hand-building this one.
+
+```python
 mass = af.Model(al.mp.PowerLaw)
 mass.centre.centre_0 = 0.0          # float -> fixed
 mass.centre.centre_1 = 0.0

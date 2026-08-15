@@ -44,18 +44,41 @@ def setup_pixel_grid(npix=20, pix_scl=0.4):
     return pixel_grid
 
 
-def setup_psf(psf_type='GAUSSIAN', fwhm=0.2, pixel_size=0.4):
+def setup_psf(psf_type='GAUSSIAN', fwhm=0.2, pixel_size=None,
+              kernel_point_source=None, kernel_supersampling_factor=1,
+              truncation=None):
     """Setup PSF for EM observations.
-    
+
     Args:
-        psf_type: PSF type (default: 'GAUSSIAN')
-        fwhm: Full width at half maximum in arcsec (default: 0.2)
-        pixel_size: Pixel size in arcsec (default: 0.4)
-    
-    Returns: 
+        psf_type: 'GAUSSIAN' (default), 'PIXEL' (custom/real kernel), or 'NONE'
+        fwhm: Full width at half maximum in arcsec, GAUSSIAN only (default: 0.2)
+        pixel_size: Pixel size in arcsec, GAUSSIAN only. Must equal the image grid's
+            pix_scl -- the kernel is rendered on this grid and never resampled onto the
+            image grid, so a mismatch yields a kernel that only *looks* like the PSF
+            (setup_em_observation fills this in from pix_scl and rejects a mismatch).
+            No default: herculens raises rather than silently assume a pixel scale.
+        kernel_point_source: centered, odd-sized 2D array, required for 'PIXEL'
+        kernel_supersampling_factor: sampling of the provided kernel, in units of
+            pixel_size / factor (default: 1). This only *declares* the sampling:
+            herculens immediately degrades the kernel to the image pixel grid, and
+            the supplied array is convolved as given only when the numerics use the
+            same factor with supersampling_convolution=True, i.e.
+            kwargs_numerics={'supersampling_factor': factor,
+                             'supersampling_convolution': True}.
+            With a different factor herculens silently discards the array and
+            interpolates a replacement; setup_em_observation warns in both cases.
+        truncation: Gaussian truncation in units of sigma (default: herculens default)
+
+    Returns:
         psf (hcl.PSF instance)
     """
-    psf = hcl.PSF(psf_type=psf_type, fwhm=fwhm, pixel_size=pixel_size)
+    kwargs = {'psf_type': psf_type, 'fwhm': fwhm, 'pixel_size': pixel_size}
+    if kernel_point_source is not None:
+        kwargs['kernel_point_source'] = kernel_point_source
+        kwargs['kernel_supersampling_factor'] = kernel_supersampling_factor
+    if truncation is not None:
+        kwargs['truncation'] = truncation
+    psf = hcl.PSF(**kwargs)
     return psf
 
 
@@ -99,7 +122,10 @@ def simulate_em(kwargs_lens, kwargs_source, kwargs_lens_light,
         psf: hcl.PSF instance
         noise_class: hcl.Noise instance (with background_rms for simulation)
         seed: Random seed for noise (default: None)
-        kwargs_numerics: Optional numerics kwargs (e.g., {'supersampling_factor': 1})
+        kwargs_numerics: Optional numerics kwargs (e.g., {'supersampling_factor': 1}).
+            {'supersampling_factor': n, 'supersampling_convolution': True} evaluates
+            the profiles on the pix_scl / n subgrid and convolves there; herculens
+            forces supersampling_convolution off when n == 1.
         exposure_time: Exposure time for inference noise (default: 1e3)
     
     Returns: 

@@ -2,7 +2,19 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
-skills=(gwemfish-simulate gwemfish-infer gwemfish-plot gwemfish-batch)
+skills=(
+  gwemfish-simulate
+  gwemfish-infer
+  gwemfish-plot
+  gwemfish-batch
+  gwemfish-pal
+  pal-infer
+  pal-plot
+  pal-sim
+  lenstronomy-infer
+  lenstronomy-sim
+  lensing-mock
+)
 agents=(gwemfish.md gwemfish-batch.md)
 
 mkdir -p "$HOME/.cursor/skills" "$HOME/.cursor/agents"
@@ -31,5 +43,7 @@ for name in "${agents[@]}"; do
 done
 
 echo
-echo "Global gwemfish skills/agents linked from $repo_root"
-echo "Personal paths: copy .cursor/skills/gwemfish-local.example to ~/.cursor/skills/gwemfish-local and edit."
+echo "Global Cursor skills/agents linked from $repo_root"
+echo "Machine-local (NOT symlinked — copy once per machine and edit paths):"
+echo "  cp -r $repo_root/.cursor/skills/gwemfish-local.example ~/.cursor/skills/gwemfish-local"
+echo "  cp -r $repo_root/.cursor/skills/pal-local.example ~/.cursor/skills/pal-local"

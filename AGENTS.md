@@ -24,6 +24,8 @@ Read the closest script before inventing patterns:
 | Task | Script |
 |------|--------|
 | Minimal pipeline | `examples/scripts/example_simple_pipeline.py` |
+| Custom / PIXEL PSF | `examples/scripts/example_pixel_psf.py`, `example_pixel_psf_em_only.py` |
+| PSF plot + SNR + PAL mirror | `examples/scripts/example_psf_plot_and_pal.py`, `example_pal_mirror.py` |
 | EM+GW method comparison | `examples/scripts/em_gw_new.py` |
 | EM-only nautilus vs deriv-approx vs fisher | `examples/scripts/em_nautilus.py` |
 | GW-only nautilus (source-plane) | `examples/scripts/gw_only_nautilus.py` |
@@ -62,7 +64,7 @@ Batch YAML, `simulate_batch.py`, and `run_parallel.py` live in **lensing-mock** 
 
 ## Do not reimplement
 
-Use Herculens / gwemfish APIs: `MassModel`, `LensImage`, `lensimage_gw`, `lens_setup`, `simple_pipeline` public functions.
+Use Herculens / gwemfish APIs: `MassModel`, `LensImage`, `lensimage_gw`, `lens_setup`, `simple_pipeline` public functions. Opt-in PAL mirror: `simulate_in_pal`, `plot_system_observation_pal`, `save_pal_outputs` (`gwemfish.pal_bridge`). Custom PSF: `cfg["em"]["psf_kwargs"]` with `psf_type="PIXEL"` — see `cfg_reference.py` → `PSF_EXAMPLES`. HCL→PAL mass-profile conversions: `pal_bridge.MASS_PROFILE_BUILDERS`, never re-derive.
 
 ## Cursor setup
 
@@ -74,7 +76,12 @@ Use Herculens / gwemfish APIs: `MassModel`, `LensImage`, `lensimage_gw`, `lens_s
 ./scripts/install-cursor-skills.sh
 ```
 
-Symlinks `.cursor/skills/gwemfish-*` and `.cursor/agents/gwemfish*.md` into `~/.cursor/`. Does not touch `gwemfish-local`.
+Symlinks `.cursor/skills/` (gwemfish, pal, lenstronomy, lensing-mock) and `.cursor/agents/gwemfish*.md` into `~/.cursor/`. Does **not** symlink machine-local skills — copy and edit:
+
+```bash
+cp -r .cursor/skills/gwemfish-local.example ~/.cursor/skills/gwemfish-local
+cp -r .cursor/skills/pal-local.example ~/.cursor/skills/pal-local
+```
 
 **Machine paths (batch + CPU):** One-time per machine:
 
@@ -87,4 +94,12 @@ cp -r .cursor/skills/gwemfish-local.example ~/.cursor/skills/gwemfish-local
 
 **Subagents:** `/gwemfish`, `/gwemfish-batch` from `.cursor/agents/` (or after global install).
 
-**Skills in this repo:** `gwemfish-simulate`, `gwemfish-infer`, `gwemfish-plot`, `gwemfish-batch` under `.cursor/skills/`.
+**Skills in this repo** (real files under `.cursor/skills/`; symlinked globally by install script except `*-local.example`):
+
+| Skill | Role |
+|-------|------|
+| `gwemfish-simulate`, `gwemfish-infer`, `gwemfish-plot`, `gwemfish-batch`, `gwemfish-pal` | GWEMFISH pipeline |
+| `pal-infer`, `pal-plot`, `pal-sim` | PyAutoLens fit/plot/sim |
+| `lenstronomy-infer`, `lenstronomy-sim` | lenstronomy cross-checks |
+| `lensing-mock` | Batch YAML orchestration (sibling repo scripts) |
+| `gwemfish-local.example`, `pal-local.example` | Machine path templates → copy to `~/.cursor/skills/` |

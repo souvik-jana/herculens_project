@@ -22,6 +22,8 @@ This module intentionally keeps a high-level configuration surface:
 from __future__ import annotations
 
 import copy
+import math
+import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from numpyro.handlers import trace, substitute, seed
 
@@ -330,6 +332,10 @@ def make_default_cfg() -> Dict[str, Any]:
             # Optional suffix tag appended before extension on save.
             # e.g. "corner_{group_name}.png" + "hmc" -> "corner_{group_name}_hmc.png"
             "save_tag": None,
+            # plot_system_observation_pal (opt-in; see cfg_reference PAL mirror section)
+            "pal_plot_dataset": True,
+            "pal_plot_tracer": True,
+            "pal_dataset": "both",
         },
         "source_plane": {
             # Unused by ``to_source_plane_samples`` (image count follows ``_resolve_gw_n_images``).
@@ -346,6 +352,9 @@ def make_default_cfg() -> Dict[str, Any]:
             "save_truths_path": None,
             "save_source_samples_path": None,
             "save_system_plot_path": None,
+            "save_psf_plot_path": None,
+            "save_pal_dataset_plot_path": None,
+            "save_pal_tracer_plot_path": None,
             "json_path": None,
             # ``plot_system_observation``: ``"gw"`` (default), ``"em"``, ``"both"``, or ``"none"``.
             "system_plot_image_overlay": "gw",
@@ -521,6 +530,302 @@ def _kwargs_lens_with_explicit_defaults(
     return out
 
 
+def _resolve_psf_kwargs(em_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Tie ``psf_kwargs`` to the image grid and return the kwargs to build the PSF with.
+
+    ``psf_kwargs["pixel_size"]`` is the arcsec/pixel of the *kernel array*, and nothing
+    resamples it onto the image grid: for GAUSSIAN herculens rebuilds the convolution
+    from ``pixel_grid.pixel_width`` and only *exposes* the array, so a ``pixel_size``
+    that disagrees with ``pix_scl`` silently hands every consumer of
+    ``PSF.kernel_point_source`` (the PAL mirror, ``plot_psf``) a kernel sampled on a
+    different grid than the image. The two must therefore be equal.
+
+    A genuinely sub-pixel PSF goes through PIXEL instead: supply the kernel sampled at
+    ``pix_scl / p`` with ``kernel_supersampling_factor=p`` (integer), which herculens
+    degrades onto the image grid.
+    """
+    psf_kwargs = dict(em_cfg["psf_kwargs"])
+    psf_type = str(psf_kwargs.get("psf_type", "GAUSSIAN"))
+    pix_scl = float(em_cfg["pixel_grid_kwargs"]["pix_scl"])
+
+    if psf_type == "GAUSSIAN":
+        pixel_size = psf_kwargs.get("pixel_size")
+        if pixel_size is None:
+            psf_kwargs["pixel_size"] = pix_scl
+        elif not math.isclose(float(pixel_size), pix_scl, rel_tol=1e-9, abs_tol=0.0):
+            raise ValueError(
+                f"psf_kwargs['pixel_size']={pixel_size} != pixel_grid_kwargs['pix_scl']"
+                f"={pix_scl}. A GAUSSIAN kernel is rendered on its own pixel_size grid and "
+                "is never resampled onto the image grid, so the two must match. For a "
+                "sub-pixel PSF use psf_type='PIXEL' with the kernel sampled at "
+                "pix_scl / p and kernel_supersampling_factor=p (integer)."
+            )
+        # A leftover PIXEL kernel is ignored by herculens; drop it so the built PSF and
+        # the recorded cfg agree.
+        psf_kwargs.pop("kernel_point_source", None)
+        psf_kwargs.pop("kernel_supersampling_factor", None)
+
+    elif psf_type == "PIXEL":
+        # pixel_size is never read for PIXEL -- the kernel carries its own sampling.
+        psf_kwargs.pop("pixel_size", None)
+        factor = psf_kwargs.get("kernel_supersampling_factor", 1)
+        if int(factor) != factor or int(factor) < 1:
+            raise ValueError(
+                f"psf_kwargs['kernel_supersampling_factor']={factor} must be a positive "
+                "integer: herculens degrades the kernel by whole pixels, so a kernel "
+                "sampled at pix_scl / p only exists for integer p."
+            )
+        psf_kwargs["kernel_supersampling_factor"] = int(factor)
+
+    return psf_kwargs
+
+
+def _check_psf_supersampling(em_cfg: Dict[str, Any]) -> None:
+    """Warn when a supersampled PIXEL kernel will not be used as supplied.
+
+    ``kernel_supersampling_factor`` (p) only declares the sampling of the kernel
+    array. The fine kernel reaches the convolution only when the numerics also
+    supersample with the *same* factor and ``supersampling_convolution=True``;
+    otherwise herculens either degrades it to the image grid and discards the
+    detail, or (p != n) silently replaces it with one interpolated from the
+    degraded kernel. Neither case raises, so warn here.
+    """
+    # Only PIXEL uses the supplied kernel: herculens builds its own for GAUSSIAN and
+    # ignores both the kernel and its factor, so a leftover factor is not a mismatch.
+    if str(em_cfg["psf_kwargs"].get("psf_type", "GAUSSIAN")) != "PIXEL":
+        return
+
+    kernel_ss = int(em_cfg["psf_kwargs"].get("kernel_supersampling_factor", 1))
+    if kernel_ss <= 1:
+        return
+
+    numerics = em_cfg["kwargs_numerics"]
+    numerics_ss = int(numerics.get("supersampling_factor", 1))
+    supersampled_conv = bool(numerics.get("supersampling_convolution", False))
+
+    if numerics_ss == 1 or not supersampled_conv:
+        warnings.warn(
+            f"psf_kwargs['kernel_supersampling_factor']={kernel_ss} but "
+            f"kwargs_numerics has supersampling_factor={numerics_ss}, "
+            f"supersampling_convolution={supersampled_conv}. The convolution runs on "
+            "the image grid with the degraded kernel, so the supersampled detail is "
+            "unused. Set supersampling_factor to "
+            f"{kernel_ss} and supersampling_convolution=True to use it.",
+            stacklevel=2,
+        )
+    elif numerics_ss != kernel_ss:
+        warnings.warn(
+            f"psf_kwargs['kernel_supersampling_factor']={kernel_ss} but "
+            f"kwargs_numerics['supersampling_factor']={numerics_ss}. herculens will "
+            f"discard the supplied kernel and interpolate a replacement at factor "
+            f"{numerics_ss}. Set both to the same value.",
+            stacklevel=2,
+        )
+
+
+def recommend_supersampling(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Advise on EM supersampling settings. Pure: never edits cfg, never applies anything.
+
+    Sub-pixel structure is the reason to supersample. Two independent sources of it:
+
+      * an undersampled PSF -- sigma_px = fwhm / 2.3548 / pix_scl below ~1 means the
+        kernel is narrower than a pixel, so the convolution itself must move onto the
+        subgrid (``supersampling_convolution=True``, which needs the kernel supplied at
+        the same factor).
+      * a source smaller than a pixel -- R_sersic / pix_scl below ~1 means evaluating
+        the profile at pixel centres misrepresents the pixel integral. Supersampling the
+        *evaluation* fixes this on its own; the convolution can stay on the image grid.
+
+    Thresholds are heuristics anchored on two measured systems, not a systematic study;
+    ``verification`` in the returned dict says how to confirm for a given cfg.
+
+    Returns a dict with the diagnostics, the recommendation, the reason, and a ready
+    ``cfg_snippet``. The caller decides whether to use it -- the default everywhere
+    stays supersampling_factor=1.
+    """
+    cfg_full = _deep_merge_dict(make_default_cfg(), cfg or {})
+    em_cfg = cfg_full["em"]
+
+    pix_scl = float(em_cfg["pixel_grid_kwargs"]["pix_scl"])
+    psf_kwargs = em_cfg["psf_kwargs"]
+    psf_type = str(psf_kwargs.get("psf_type", "GAUSSIAN"))
+
+    fwhm = psf_kwargs.get("fwhm")
+    psf_sigma_px = None
+    if fwhm is not None:
+        psf_sigma_px = float(fwhm) / (2.0 * math.sqrt(2.0 * math.log(2.0))) / pix_scl
+
+    source_r_px = None
+    kwargs_source = em_cfg.get("kwargs_source") or []
+    if kwargs_source and "R_sersic" in kwargs_source[0]:
+        source_r_px = float(kwargs_source[0]["R_sersic"]) / pix_scl
+
+    psf_undersampled = psf_sigma_px is not None and psf_sigma_px < 1.0
+    source_subpixel = source_r_px is not None and source_r_px < 1.0
+
+    reasons = []
+    if psf_undersampled:
+        reasons.append(
+            f"PSF sigma = {psf_sigma_px:.2f} px (< 1): the kernel is narrower than a "
+            "pixel, so the convolution belongs on the subgrid"
+        )
+    if source_subpixel:
+        reasons.append(
+            f"source R_sersic = {source_r_px:.2f} px (< 1): pixel-centre evaluation "
+            "misrepresents the pixel integral"
+        )
+
+    if psf_undersampled:
+        factor = 2
+        convolution = True
+    elif source_subpixel:
+        factor = 2
+        convolution = False
+        reasons.append(
+            "PSF is adequately sampled, so supersampled convolution is not needed -- "
+            "evaluation-only supersampling is cheaper and keeps the PAL mirror tight"
+        )
+    else:
+        factor = 1
+        convolution = False
+        reasons.append(
+            "PSF and source are both resolved by the pixel grid; supersampling would "
+            "cost time without changing the model"
+        )
+
+    if factor > 1:
+        numerics_snippet = {
+            "supersampling_factor": factor,
+            "supersampling_convolution": convolution,
+        }
+    else:
+        numerics_snippet = {"supersampling_factor": 1}
+
+    notes = []
+    if factor > 1:
+        notes.append(
+            f"supersampling_factor={factor} is a STARTING POINT, not a converged "
+            "answer. Run check_supersampling_convergence() and raise the factor until "
+            "the change falls below your tolerance."
+        )
+    if factor > 1 and convolution:
+        if psf_type == "PIXEL":
+            notes.append(
+                f"Supply the kernel sampled at pix_scl / {factor} with "
+                f"kernel_supersampling_factor={factor}; a mismatched factor makes "
+                "herculens discard it and interpolate a replacement."
+            )
+        notes.append(
+            "The PAL mirror carries a ~2-3% of peak systematic under supersampled "
+            "convolution (PAL convolves at image scale). Use "
+            "supersampling_convolution=False for tight PAL cross-checks."
+        )
+    if factor > 1:
+        notes.append(f"Cost scales as roughly {factor}**2 profile evaluations.")
+
+    # Measured: at sigma ~0.21 px the clean model still moves ~8% of peak between
+    # factor 3 and 4, so no modest factor converges. The pixel scale, not the
+    # numerics, is the limitation there.
+    if psf_sigma_px is not None and psf_sigma_px < 0.5:
+        notes.append(
+            f"PSF sigma = {psf_sigma_px:.2f} px is far below Nyquist: supersampling "
+            "converges slowly and the model stays factor-dependent at any affordable "
+            "setting. Treat results as pixel-scale limited, or use a finer grid."
+        )
+
+    return {
+        "pix_scl": pix_scl,
+        "psf_type": psf_type,
+        "psf_sigma_px": psf_sigma_px,
+        "source_R_sersic_px": source_r_px,
+        "psf_undersampled": psf_undersampled,
+        "source_subpixel": source_subpixel,
+        "recommended_supersampling_factor": factor,
+        "recommended_supersampling_convolution": convolution,
+        "recommended_kernel_supersampling_factor": factor if convolution else 1,
+        "reason": "; ".join(reasons),
+        "notes": notes,
+        "cfg_snippet": {"em": {"kwargs_numerics": numerics_snippet}},
+        "verification": (
+            "Confirm rather than trust the thresholds: "
+            "check_supersampling_convergence(cfg) compares clean models across factors. "
+            "Adopt the smallest factor whose difference from the next one is below your "
+            "tolerance; if none is, the pixel scale is the limitation, not the numerics."
+        ),
+    }
+
+
+def check_supersampling_convergence(
+    cfg: Optional[Dict[str, Any]] = None,
+    factors: Tuple[int, ...] = (1, 2, 3, 4),
+    tolerance: float = 1e-3,
+) -> Dict[str, Any]:
+    """Measure how the clean EM model changes with supersampling_factor.
+
+    The thresholds in ``recommend_supersampling`` are heuristics; this is the
+    measurement. Each factor is compared against the next one up, and the converged
+    factor is the smallest whose successor changes the model by less than
+    ``tolerance`` (relative to the peak). ``None`` means the sequence never settled
+    -- the grid is too coarse for the PSF, and no affordable factor will fix that.
+
+    Costs one EM setup per factor. Never edits the cfg it is given.
+    """
+    import numpy as np
+
+    cfg_full = _deep_merge_dict(make_default_cfg(), cfg or {})
+    psf_kwargs = cfg_full["em"]["psf_kwargs"]
+    # Same rule as _check_psf_supersampling: the factor only binds a PIXEL kernel.
+    kernel_ss = (
+        int(psf_kwargs.get("kernel_supersampling_factor", 1))
+        if str(psf_kwargs.get("psf_type", "GAUSSIAN")) == "PIXEL"
+        else 1
+    )
+
+    models = {}
+    for factor in factors:
+        cfg_factor = copy.deepcopy(cfg_full)
+        cfg_factor["em"]["kwargs_numerics"] = {
+            "supersampling_factor": factor,
+            "supersampling_convolution": factor > 1,
+        }
+        # A PIXEL kernel is tied to its own sampling, so a scan over numerics factors
+        # would otherwise trip the p != n path and silently swap the kernel.
+        if kernel_ss > 1 and factor != kernel_ss:
+            raise ValueError(
+                "check_supersampling_convergence cannot scan factors against a kernel "
+                f"fixed at kernel_supersampling_factor={kernel_ss}. Scan with a "
+                "GAUSSIAN psf_kwargs, or rebuild the kernel per factor."
+            )
+        ctx = setup_em_observation(cfg=cfg_factor)
+        models[factor] = np.asarray(
+            ctx["lens_image"].model(
+                kwargs_lens=ctx["kwargs_lens"],
+                kwargs_source=ctx["cfg"]["em"]["kwargs_source"],
+                kwargs_lens_light=ctx["cfg"]["em"]["kwargs_lens_light"],
+            ),
+            float,
+        )
+
+    peak = float(max(np.max(np.abs(m)) for m in models.values()))
+    steps = {}
+    for lower, upper in zip(factors[:-1], factors[1:]):
+        steps[lower] = float(np.max(np.abs(models[lower] - models[upper]))) / peak
+
+    converged = None
+    for factor in factors[:-1]:
+        if steps[factor] < tolerance:
+            converged = factor
+            break
+
+    return {
+        "factors": list(factors),
+        "tolerance": tolerance,
+        "rel_change_to_next_factor": steps,
+        "converged_factor": converged,
+        "pixel_scale_limited": converged is None,
+    }
+
+
 def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Simulate or set up all EM components needed for inference.
 
@@ -575,7 +880,11 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     )
 
     pixel_grid = setup_pixel_grid(**em_cfg["pixel_grid_kwargs"])
+    # Reconcile the kernel grid with the image grid before building the PSF, and record
+    # what was actually used in ctx["cfg"].
+    em_cfg["psf_kwargs"] = _resolve_psf_kwargs(em_cfg)
     psf = setup_psf(**em_cfg["psf_kwargs"])
+    _check_psf_supersampling(em_cfg)
     noise_simu = setup_noise(**em_cfg["noise_simu_kwargs"])
     noise_inf = setup_noise(**em_cfg["noise_inf_kwargs"])
 
@@ -2165,12 +2474,43 @@ def plot_source_posterior(
     return _plot_samples_common(samples=samples_for_plot, truths=truths, cfg=cfg)
 
 
+def compute_noise_snr_maps(ctx):
+    """Per-pixel noise sigma and S/N maps for the EM observation.
+
+    Model-based convention (matches PyAutoLens' noise map in expectation, and the
+    verified gwemfish<->PAL comparison): ``sigma = sqrt(bg_rms^2 + max(model, 0)/t_exp)``
+    with ``model`` the PSF-convolved clean image including lens light, and
+    ``snr = data / sigma`` on the noisy observation.
+
+    Returns:
+        (noise_map, snr_map) as numpy arrays in gwemfish layout (row 0 = bottom).
+    """
+    import numpy as np
+
+    if "lens_image" not in ctx or "em_obs" not in ctx:
+        raise ValueError("Missing EM context. Run `setup_em_observation(...)` first.")
+
+    em_cfg = ctx["cfg"]["em"]
+    bg_rms = float(em_cfg["noise_simu_kwargs"]["background_rms"])
+    t_exp = float(em_cfg["exposure_time"])
+    model = np.asarray(
+        ctx["lens_image"].model(
+            kwargs_lens=ctx["kwargs_lens"],
+            kwargs_source=em_cfg["kwargs_source"],
+            kwargs_lens_light=em_cfg["kwargs_lens_light"],
+        )
+    )
+    noise_map = np.sqrt(bg_rms**2 + np.clip(model, 0.0, None) / t_exp)
+    data = np.asarray(ctx["em_obs"]["data"])
+    return noise_map, data / noise_map
+
+
 def plot_system_observation(
     ctx: Dict[str, Any],
     *,
     cfg: Optional[Dict[str, Any]] = None,
 ) -> Any:
-    """Plot clean and noisy EM system image with optional image-position overlays.
+    """Plot clean image, noisy observation, and S/N map with optional image overlays.
 
     Overlay mode: ``cfg['output']['system_plot_image_overlay']`` — ``"gw"`` (default,
     uses ``truth_params['image_x*']`` / ``image_y*`` or ``ctx['x_img_gw']``),
@@ -2197,6 +2537,11 @@ def plot_system_observation(
         kwargs_lens_light=kwargs_lens_light,
     )
     data = ctx["em_obs"]["data"]
+    noise_map = np.sqrt(
+        float(cfg_full["em"]["noise_simu_kwargs"]["background_rms"]) ** 2
+        + np.clip(np.asarray(image_clean), 0.0, None) / float(cfg_full["em"]["exposure_time"])
+    )
+    snr_map = np.asarray(data) / noise_map
 
     # Use sky coordinates if pixel grid is available; fallback to index axes.
     xx = yy = None
@@ -2206,22 +2551,25 @@ def plot_system_observation(
         except Exception:
             xx = yy = None
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4))
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(15, 4))
     if xx is not None and yy is not None:
         im1 = ax1.pcolormesh(xx, yy, np.asarray(image_clean), shading="auto")
         im2 = ax2.pcolormesh(xx, yy, np.asarray(data), shading="auto")
+        im3 = ax3.pcolormesh(xx, yy, snr_map, shading="auto")
     else:
         im1 = ax1.imshow(np.asarray(image_clean), origin="lower")
         im2 = ax2.imshow(np.asarray(data), origin="lower")
+        im3 = ax3.imshow(snr_map, origin="lower")
     fig.colorbar(im1, ax=ax1)
     fig.colorbar(im2, ax=ax2)
+    fig.colorbar(im3, ax=ax3)
 
     ax1.set_title("Clean lensing image")
     ax2.set_title("Noisy observation")
-    ax1.set_xlabel("RA [arcsec]")
-    ax1.set_ylabel("Dec [arcsec]")
-    ax2.set_xlabel("RA [arcsec]")
-    ax2.set_ylabel("Dec [arcsec]")
+    ax3.set_title("S/N map")
+    for ax in (ax1, ax2, ax3):
+        ax.set_xlabel("RA [arcsec]")
+        ax.set_ylabel("Dec [arcsec]")
 
     out_plot = cfg_full.get("output", {})
     overlay = str(out_plot.get("system_plot_image_overlay", "gw")).strip().lower()
@@ -2279,6 +2627,56 @@ def plot_system_observation(
     fig.tight_layout()
     out_cfg = cfg_full.get("output", {})
     save_path = _resolve_output_path(out_cfg.get("save_system_plot_path"), out_cfg.get("output_dir"))
+    _ensure_parent_dir(save_path)
+    if save_path:
+        fig.savefig(save_path, bbox_inches="tight", dpi=300)
+    return fig
+
+
+def plot_psf(ctx, *, cfg=None):
+    """Plot the PSF kernel used by the EM forward model (linear and log10 panels).
+
+    Works for any ``psf_type`` (GAUSSIAN, PIXEL): the kernel is read from
+    ``ctx['lens_image'].PSF.kernel_point_source``.
+
+    For PIXEL that array *is* the convolution kernel. For GAUSSIAN it is a rendering
+    of the PSF on the ``pixel_size`` grid -- herculens convolves via
+    ``GaussianConvolution(sigma, pixel_grid.pixel_width)`` rather than with this array.
+    ``setup_em_observation`` pins ``pixel_size`` to ``pix_scl``, so the two agree.
+
+    If ``cfg['output']['save_psf_plot_path']`` is set, saves the figure there
+    (resolved against ``output_dir`` like the other plot functions).
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+
+    cfg_full = _deep_merge_dict(ctx.get("cfg", make_default_cfg()), cfg)
+
+    if "lens_image" not in ctx:
+        raise ValueError("Missing EM context. Run `setup_em_observation(...)` first.")
+
+    kernel = np.asarray(ctx["lens_image"].PSF.kernel_point_source, float)
+    pix_scl = float(cfg_full["em"]["pixel_grid_kwargs"]["pix_scl"])
+    half = kernel.shape[0] * pix_scl / 2.0
+    ext = [-half, half, -half, half]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4))
+    im1 = ax1.imshow(kernel, origin="lower", extent=ext)
+    log_kernel = np.log10(np.where(kernel > 0, kernel, np.nan))
+    im2 = ax2.imshow(log_kernel, origin="lower", extent=ext)
+    fig.colorbar(im1, ax=ax1)
+    fig.colorbar(im2, ax=ax2)
+
+    psf_type = str(cfg_full["em"]["psf_kwargs"].get("psf_type", "GAUSSIAN"))
+    ax1.set_title(f"PSF kernel ({psf_type})")
+    ax2.set_title("PSF kernel (log10)")
+    for ax in (ax1, ax2):
+        ax.set_xlabel("RA [arcsec]")
+        ax.set_ylabel("Dec [arcsec]")
+
+    fig.tight_layout()
+    out_cfg = cfg_full.get("output", {})
+    save_path = _resolve_output_path(out_cfg.get("save_psf_plot_path"), out_cfg.get("output_dir"))
     _ensure_parent_dir(save_path)
     if save_path:
         fig.savefig(save_path, bbox_inches="tight", dpi=300)

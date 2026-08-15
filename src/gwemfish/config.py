@@ -70,11 +70,12 @@ DEFAULT_PIXEL_GRID_KWARGS = {
     'pix_scl': 0.4,
 }
 
-# Default PSF kwargs
+# Default PSF kwargs. No 'pixel_size': the GAUSSIAN kernel must be rendered on the image
+# grid, so setup_em_observation fills it from pixel_grid_kwargs['pix_scl']. Pinning it here
+# would make every cfg that only changes pix_scl a mismatch.
 DEFAULT_PSF_KWARGS = {
     'psf_type': 'GAUSSIAN',
     'fwhm': 0.2,
-    'pixel_size': 0.4,
 }
 
 # Default noise kwargs
