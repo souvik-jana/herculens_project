@@ -44,7 +44,7 @@ def setup_pixel_grid(npix=20, pix_scl=0.4):
     return pixel_grid
 
 
-def setup_psf(psf_type='GAUSSIAN', fwhm=0.2, pixel_size=0.4,
+def setup_psf(psf_type='GAUSSIAN', fwhm=0.2, pixel_size=None,
               kernel_point_source=None, kernel_supersampling_factor=1,
               truncation=None):
     """Setup PSF for EM observations.
@@ -52,7 +52,11 @@ def setup_psf(psf_type='GAUSSIAN', fwhm=0.2, pixel_size=0.4,
     Args:
         psf_type: 'GAUSSIAN' (default), 'PIXEL' (custom/real kernel), or 'NONE'
         fwhm: Full width at half maximum in arcsec, GAUSSIAN only (default: 0.2)
-        pixel_size: Pixel size in arcsec, GAUSSIAN only (default: 0.4)
+        pixel_size: Pixel size in arcsec, GAUSSIAN only. Must equal the image grid's
+            pix_scl -- the kernel is rendered on this grid and never resampled onto the
+            image grid, so a mismatch yields a kernel that only *looks* like the PSF
+            (setup_em_observation fills this in from pix_scl and rejects a mismatch).
+            No default: herculens raises rather than silently assume a pixel scale.
         kernel_point_source: centered, odd-sized 2D array, required for 'PIXEL'
         kernel_supersampling_factor: sampling of the provided kernel, in units of
             pixel_size / factor (default: 1). This only *declares* the sampling:

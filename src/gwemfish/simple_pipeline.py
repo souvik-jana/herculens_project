@@ -530,6 +530,56 @@ def _kwargs_lens_with_explicit_defaults(
     return out
 
 
+def _resolve_psf_kwargs(em_cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Tie ``psf_kwargs`` to the image grid and return the kwargs to build the PSF with.
+
+    ``psf_kwargs["pixel_size"]`` is the arcsec/pixel of the *kernel array*, and nothing
+    resamples it onto the image grid: for GAUSSIAN herculens rebuilds the convolution
+    from ``pixel_grid.pixel_width`` and only *exposes* the array, so a ``pixel_size``
+    that disagrees with ``pix_scl`` silently hands every consumer of
+    ``PSF.kernel_point_source`` (the PAL mirror, ``plot_psf``) a kernel sampled on a
+    different grid than the image. The two must therefore be equal.
+
+    A genuinely sub-pixel PSF goes through PIXEL instead: supply the kernel sampled at
+    ``pix_scl / p`` with ``kernel_supersampling_factor=p`` (integer), which herculens
+    degrades onto the image grid.
+    """
+    psf_kwargs = dict(em_cfg["psf_kwargs"])
+    psf_type = str(psf_kwargs.get("psf_type", "GAUSSIAN"))
+    pix_scl = float(em_cfg["pixel_grid_kwargs"]["pix_scl"])
+
+    if psf_type == "GAUSSIAN":
+        pixel_size = psf_kwargs.get("pixel_size")
+        if pixel_size is None:
+            psf_kwargs["pixel_size"] = pix_scl
+        elif not math.isclose(float(pixel_size), pix_scl, rel_tol=1e-9, abs_tol=0.0):
+            raise ValueError(
+                f"psf_kwargs['pixel_size']={pixel_size} != pixel_grid_kwargs['pix_scl']"
+                f"={pix_scl}. A GAUSSIAN kernel is rendered on its own pixel_size grid and "
+                "is never resampled onto the image grid, so the two must match. For a "
+                "sub-pixel PSF use psf_type='PIXEL' with the kernel sampled at "
+                "pix_scl / p and kernel_supersampling_factor=p (integer)."
+            )
+        # A leftover PIXEL kernel is ignored by herculens; drop it so the built PSF and
+        # the recorded cfg agree.
+        psf_kwargs.pop("kernel_point_source", None)
+        psf_kwargs.pop("kernel_supersampling_factor", None)
+
+    elif psf_type == "PIXEL":
+        # pixel_size is never read for PIXEL -- the kernel carries its own sampling.
+        psf_kwargs.pop("pixel_size", None)
+        factor = psf_kwargs.get("kernel_supersampling_factor", 1)
+        if int(factor) != factor or int(factor) < 1:
+            raise ValueError(
+                f"psf_kwargs['kernel_supersampling_factor']={factor} must be a positive "
+                "integer: herculens degrades the kernel by whole pixels, so a kernel "
+                "sampled at pix_scl / p only exists for integer p."
+            )
+        psf_kwargs["kernel_supersampling_factor"] = int(factor)
+
+    return psf_kwargs
+
+
 def _check_psf_supersampling(em_cfg: Dict[str, Any]) -> None:
     """Warn when a supersampled PIXEL kernel will not be used as supplied.
 
@@ -540,6 +590,11 @@ def _check_psf_supersampling(em_cfg: Dict[str, Any]) -> None:
     detail, or (p != n) silently replaces it with one interpolated from the
     degraded kernel. Neither case raises, so warn here.
     """
+    # Only PIXEL uses the supplied kernel: herculens builds its own for GAUSSIAN and
+    # ignores both the kernel and its factor, so a leftover factor is not a mismatch.
+    if str(em_cfg["psf_kwargs"].get("psf_type", "GAUSSIAN")) != "PIXEL":
+        return
+
     kernel_ss = int(em_cfg["psf_kwargs"].get("kernel_supersampling_factor", 1))
     if kernel_ss <= 1:
         return
@@ -719,7 +774,12 @@ def check_supersampling_convergence(
 
     cfg_full = _deep_merge_dict(make_default_cfg(), cfg or {})
     psf_kwargs = cfg_full["em"]["psf_kwargs"]
-    kernel_ss = int(psf_kwargs.get("kernel_supersampling_factor", 1))
+    # Same rule as _check_psf_supersampling: the factor only binds a PIXEL kernel.
+    kernel_ss = (
+        int(psf_kwargs.get("kernel_supersampling_factor", 1))
+        if str(psf_kwargs.get("psf_type", "GAUSSIAN")) == "PIXEL"
+        else 1
+    )
 
     models = {}
     for factor in factors:
@@ -820,6 +880,9 @@ def setup_em_observation(cfg: Optional[Dict[str, Any]] = None) -> Dict[str, Any]
     )
 
     pixel_grid = setup_pixel_grid(**em_cfg["pixel_grid_kwargs"])
+    # Reconcile the kernel grid with the image grid before building the PSF, and record
+    # what was actually used in ctx["cfg"].
+    em_cfg["psf_kwargs"] = _resolve_psf_kwargs(em_cfg)
     psf = setup_psf(**em_cfg["psf_kwargs"])
     _check_psf_supersampling(em_cfg)
     noise_simu = setup_noise(**em_cfg["noise_simu_kwargs"])
@@ -2574,8 +2637,12 @@ def plot_psf(ctx, *, cfg=None):
     """Plot the PSF kernel used by the EM forward model (linear and log10 panels).
 
     Works for any ``psf_type`` (GAUSSIAN, PIXEL): the kernel is read from
-    ``ctx['lens_image'].PSF.kernel_point_source``, i.e. exactly what convolves
-    the model images.
+    ``ctx['lens_image'].PSF.kernel_point_source``.
+
+    For PIXEL that array *is* the convolution kernel. For GAUSSIAN it is a rendering
+    of the PSF on the ``pixel_size`` grid -- herculens convolves via
+    ``GaussianConvolution(sigma, pixel_grid.pixel_width)`` rather than with this array.
+    ``setup_em_observation`` pins ``pixel_size`` to ``pix_scl``, so the two agree.
 
     If ``cfg['output']['save_psf_plot_path']`` is set, saves the figure there
     (resolved against ``output_dir`` like the other plot functions).

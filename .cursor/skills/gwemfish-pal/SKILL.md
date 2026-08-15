@@ -35,7 +35,12 @@ from gwemfish import (
 
 ctx_pal = simulate_in_pal(ctx)                    # tracer, grid, psf, datasets, match_stats
 plot_system_observation_pal(ctx_pal, cfg=cfg)     # cfg["plot"]["pal_*"], output save_pal_* paths
+# save_pal_dataset_plot_path: directory only (two files: _pal and _gwemfish)
+# save_pal_tracer_plot_path:  basename honoured; bare filenames land in output_dir or cwd
 save_pal_outputs(ctx_pal, out_dir)                # FITS + tracer.json only (no PNGs)
+# writes data_gwemfish.fits + data_pal.fits (+ psf_*/noise_map_* each), never a bare
+# data.fits -- the two datasets are not interchangeable. dataset="gwemfish"|"pal" narrows it.
+# Fit data_gwemfish.fits (pal-infer golden rule); data_pal.fits is PAL's own noise draw.
 
 plot_psf(ctx, cfg={"output": {"save_psf_plot_path": "psf.png"}})
 noise_map, snr_map = compute_noise_snr_maps(ctx)  # model-based sigma (PAL convention)
@@ -43,8 +48,19 @@ noise_map, snr_map = compute_noise_snr_maps(ctx)  # model-based sigma (PAL conve
 
 `ctx_pal` keys: `tracer`, `grid`, `psf`, `dataset_pal`, `dataset_gwemfish`, `dataset_clean`, `match_stats`.
 
+Any `lens_model_list` works — length and profile names are read from cfg, not assumed
+(`["EPL"]`, `["EPL","SHEAR","CONVERGENCE"]`, `["SIE","SHEAR"]`, …). See the §1f map for
+supported profiles; unsupported ones raise instead of being silently dropped.
+
 Custom PSF: set `cfg["em"]["psf_kwargs"] = {"psf_type": "PIXEL", "kernel_point_source": k}` before
 `setup_em_observation`; Route 1 kernel injection is automatic. See `cfg_reference.py` → `PSF_EXAMPLES`.
+
+⚠️ For `psf_type="GAUSSIAN"`, `PSF.kernel_point_source` is a *rendering* of the PSF on the
+`pixel_size` grid — herculens convolves via `GaussianConvolution(sigma, pixel_grid.pixel_width)`,
+not with that array. The bridge injects the array into PAL, so `pixel_size` must equal `pix_scl`
+or PAL convolves with a kernel gwemfish never used (~50% of peak when they differ by 4x).
+`setup_em_observation` now pins them. Note `psf_max_abs_diff` cannot catch this — PAL's kernel
+*is* the injected HCL kernel — only `model_max_rel_diff` will.
 Supersampled kernels (`kernel_supersampling_factor` > 1) need matching `kwargs_numerics` — see §3a
 and the `gwemfish-simulate` skill.
 
@@ -121,7 +137,57 @@ For γ=2 this reduces to the SIE formula above.
 Same `(gamma_1, gamma_2)` convention in both codes — no swap.
 `shear = al.mp.ExternalShear(gamma_1=gamma1, gamma_2=gamma2)`
 
-### 1f. Canonical implementation
+⚠️ PAL's `ExternalShear` has no `centre`, so HCL `SHEAR` with non-zero `ra_0`/`dec_0`
+has **no** PAL equivalent (~11% deflection error if forced). `pal_bridge` raises.
+
+### 1f. Full mass-profile map (any `lens_model_list`)
+
+`make_lens_galaxy` builds **every** entry of `cfg["lens"]["lens_model_list"]`, any
+length and any order, via the `pal_bridge.MASS_PROFILE_BUILDERS` registry. Don't
+assume `["EPL", "SHEAR"]` — profile names come from cfg.
+
+Every rule below verified against herculens deflection angles to machine precision
+(≤1e-9, most 1e-15) across randomised parameter sets. `q = axis_ratio(e1, e2)`.
+
+| HCL name | PAL class | Params |
+|---|---|---|
+| `EPL` | `mp.PowerLaw` | `einstein_radius = theta_E_pal(...)` (§1d), `slope=gamma` |
+| `EPL` (γ=2) | `mp.Isothermal` | `einstein_radius = theta_E (1+q)/(2√q)` (§1c) |
+| `SIE` | `mp.Isothermal` | same as EPL γ=2 |
+| `SIS` | `mp.IsothermalSph` | `einstein_radius = theta_E` (raw — q=1, no rescale) |
+| `NIE` | `mp.IsothermalCore` | einstein_radius as SIE; **`core_radius = r_core / √q`** |
+| `SHEAR` | `mp.ExternalShear` | `gamma_1=gamma1`, `gamma_2=gamma2` (no swap) |
+| `SHEAR_GAMMA_PSI` | `mp.ExternalShear` | `gamma_1 = γ cos2ψ`, `gamma_2 = γ sin2ψ` |
+| `CONVERGENCE` | `mp.MassSheet` | `kappa=kappa`, `centre = (dec_0, ra_0)` |
+| `POINT_MASS` | `mp.PointMass` | `einstein_radius = theta_E` |
+| `MULTIPOLE` | `mp.PowerLawMultipole` | `m=m`, `einstein_radius=1.0`, `slope=2.0`, `multipole_comps = (a_m sin(mφ_m), a_m cos(mφ_m))` |
+| `PIEMD` | `mp.PIEMass` | `ra=r_core`, `b0 = √(θ_E² + r_core²) + r_core` |
+| `DPIE` | `mp.dPIEMass` | `ra=r_core`, `rs=r_trunc`, `b0 = prefac·(r_trunc−r_core)/r_trunc` |
+
+`DPIE` prefac (herculens `_param_conv`, GLEE convention):
+`prefac = θ_E² / [(√(r_core²+θ_E²) − r_core) − (√(r_trunc²+θ_E²) − r_trunc)]`.
+PAL folds an extra `rs/(rs−ra)` into its κ, hence the `(rs−ra)/rs` on `b0`.
+
+`PIEMD`/`DPIE` carry `(q, phi)` instead of `(e1, e2)`:
+`ell_comps = (ε sin2φ, ε cos2φ)` with `ε = (1−q)/(1+q)` — same swap rule as §1a.
+Both `b0` forms are q-independent.
+
+**No PAL equivalent — `pal_bridge` raises rather than mis-convert:**
+
+| HCL name | why |
+|---|---|
+| `GAUSSIAN` | herculens Gaussian is a *potential*-Gaussian; PAL `mp.Gaussian` is light-derived mass. Best possible fit is 100% off. |
+| `PIXELATED`, `PIXELATED_DIRAC`, `PIXELATED_FIXED` | free-form pixel potential grid, no analytic PAL counterpart |
+| `SHEAR` with `ra_0`/`dec_0` ≠ 0 | see §1e |
+| `MULTIPOLE` with `m=1` | herculens itself returns non-finite deflections |
+
+`al.Galaxy` sums every mass profile it is given, so the bridge passes one
+`mass_{i}_{name}` component per list entry — verified against `MassModel.alpha`
+for 1–4 profiles, duplicate types (`EPL`+`EPL`), and reversed order.
+
+Lens light is still single-profile (`kwargs_lens_light[0]`); more than one raises.
+
+### 1g. Canonical implementation
 
 **In-repo (preferred for single-system):** `gwemfish.pal_bridge` — `simulate_in_pal`,
 `plot_system_observation_pal`, `save_pal_outputs` (see §0). Module:

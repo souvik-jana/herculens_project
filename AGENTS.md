@@ -64,7 +64,7 @@ Batch YAML, `simulate_batch.py`, and `run_parallel.py` live in **lensing-mock** 
 
 ## Do not reimplement
 
-Use Herculens / gwemfish APIs: `MassModel`, `LensImage`, `lensimage_gw`, `lens_setup`, `simple_pipeline` public functions. Opt-in PAL mirror: `simulate_in_pal`, `plot_system_observation_pal`, `save_pal_outputs` (`gwemfish.pal_bridge`). Custom PSF: `cfg["em"]["psf_kwargs"]` with `psf_type="PIXEL"` — see `cfg_reference.py` → `PSF_EXAMPLES`.
+Use Herculens / gwemfish APIs: `MassModel`, `LensImage`, `lensimage_gw`, `lens_setup`, `simple_pipeline` public functions. Opt-in PAL mirror: `simulate_in_pal`, `plot_system_observation_pal`, `save_pal_outputs` (`gwemfish.pal_bridge`). Custom PSF: `cfg["em"]["psf_kwargs"]` with `psf_type="PIXEL"` — see `cfg_reference.py` → `PSF_EXAMPLES`. HCL→PAL mass-profile conversions: `pal_bridge.MASS_PROFILE_BUILDERS`, never re-derive.
 
 ## Cursor setup
 

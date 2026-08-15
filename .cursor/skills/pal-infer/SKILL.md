@@ -54,6 +54,10 @@ dataset for cross-checks. See `gwemfish-pal` skill §0 and `example_psf_plot_and
 | `gamma1, gamma2` | shear `gamma_1, gamma_2` | identical |
 | 2D array (row 0 = bottom) | (row 0 = top) | `np.flipud` (own inverse) |
 
+Beyond EPL + shear (SIE, SIS, NIE, CONVERGENCE, POINT_MASS, MULTIPOLE, PIEMD, DPIE,
+SHEAR_GAMMA_PSI): use `pal_bridge.MASS_PROFILE_BUILDERS` rather than deriving the rule —
+see the `gwemfish-pal` skill §1f for the verified table.
+
 Inverse (samples PAL -> HCL), what you save for comparison:
 
 ```python

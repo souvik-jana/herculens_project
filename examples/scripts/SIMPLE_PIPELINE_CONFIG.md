@@ -50,7 +50,7 @@ Electromagnetic simulation and inference setup.
 
 #### Custom PSF
 
-Default is a Gaussian via `psf_kwargs = {"psf_type": "GAUSSIAN", "fwhm": ..., "pixel_size": ...}`.
+Default is a Gaussian via `psf_kwargs = {"psf_type": "GAUSSIAN", "fwhm": ...}`. Leave `pixel_size` out — the kernel is rendered on the image grid, so `setup_em_observation` sets it from `pix_scl`; passing a different value raises. For a sub-pixel PSF use `PIXEL` with an integer `kernel_supersampling_factor`, not a smaller `pixel_size`.
 
 For an instrument or hand-built kernel, set **`psf_type": "PIXEL"`** and pass **`kernel_point_source`**: a centered, odd-sized 2D numpy array (typically sum-normalized). Optional `kernel_supersampling_factor` (default `1`).
 
@@ -105,8 +105,8 @@ Optional for GW-only **nautilus** source-plane bounds:
 
 | Key | Role |
 |-----|------|
-| `lens_model_list` | e.g. `["EPL", "SHEAR"]`. |
-| `kwargs_lens` | List of dicts: EPL mass + external shear parameters. |
+| `lens_model_list` | e.g. `["EPL", "SHEAR"]`. Any length/order (`["EPL"]`, `["EPL", "SHEAR", "CONVERGENCE"]`, `["SIE", "SHEAR"]`, …). |
+| `kwargs_lens` | List of dicts, one per `lens_model_list` entry (e.g. EPL mass + external shear parameters). |
 | `zl`, `zs` | Lens and source redshifts. |
 
 ### `priors`
@@ -222,6 +222,8 @@ save_pal_outputs(ctx_pal, out_dir)             # FITS + tracer.json only
 ```
 
 `ctx_pal["match_stats"]` reports cross-framework checks (model, noise map, PSF kernel). See `examples/scripts/example_psf_plot_and_pal.py`.
+
+The PAL lens galaxy mirrors every profile in `lens_model_list` (supported names in `pal_bridge.MASS_PROFILE_BUILDERS`; unsupported ones raise). Conversion rules: `gwemfish-pal` skill §1f.
 
 Other gwemfish plot helpers: `plot_system_observation(ctx)`, `plot_psf(ctx)`, `compute_noise_snr_maps(ctx)`.
 

@@ -8,7 +8,7 @@ Deep-merged with `make_default_cfg()`. Full doc: `LENS_RECONSTRUCTION_ROOT/examp
 |-----|------|
 | `enabled` | `False` → GW-only (empty ctx from EM setup) |
 | `pixel_grid_kwargs` | `npix`, `pix_scl` |
-| `psf_kwargs` | `psf_type`, `fwhm`, `pixel_size`; PIXEL also `kernel_point_source`, `kernel_supersampling_factor` |
+| `psf_kwargs` | `psf_type`, `fwhm` (omit `pixel_size` — set from `pix_scl`; a different value raises); PIXEL also `kernel_point_source`, `kernel_supersampling_factor` (positive int) |
 | `noise_simu_kwargs`, `noise_inf_kwargs` | sim vs infer noise |
 | `kwargs_numerics` | `supersampling_factor`, `supersampling_convolution` — must match `kernel_supersampling_factor` (see SKILL.md) |
 | `exposure_time`, `seed` | exposure, noise RNG |

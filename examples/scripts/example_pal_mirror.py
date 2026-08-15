@@ -8,7 +8,8 @@ aplt imports needed) and save_pal_outputs for FITS + tracer.json only.
 Outputs (gitignored) under examples/outputs/pal_mirror/:
   system_observation.png, psf.png                      (gwemfish side)
   dataset_subplot_pal.png, dataset_subplot_gwemfish.png, tracer.png
-  data.fits, noise_map.fits, psf.fits, tracer.json
+  data_gwemfish.fits, noise_map_gwemfish.fits, psf_gwemfish.fits  (fit this one)
+  data_pal.fits, noise_map_pal.fits, psf_pal.fits, tracer.json
   match_stats.txt
 """
 

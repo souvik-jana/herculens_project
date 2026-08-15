@@ -68,6 +68,8 @@ Resolve paths via `cfg["output"]["output_dir"]`. Pattern: `save_path="image_plan
 
 Output keys for observation/PSF/PAL plots: `save_system_plot_path`, `save_psf_plot_path`, `save_pal_dataset_plot_path`, `save_pal_tracer_plot_path`.
 
+All accept a bare filename (resolved under `output_dir`, or the cwd when that is unset) or a full path. One asymmetry: `save_pal_dataset_plot_path` uses only the directory and writes `dataset_subplot_pal` / `dataset_subplot_gwemfish`, because `pal_dataset="both"` yields two files from one setting. `save_pal_tracer_plot_path` does honour the basename — `aplt.subplot_tracer` has no `output_filename` argument (unlike `subplot_imaging_dataset`) and always writes `tracer.png`, so `plot_system_observation_pal` renames it afterwards.
+
 ## Source plane workflow
 
 ```python
@@ -140,6 +142,7 @@ from gwemfish import simulate_in_pal, plot_system_observation_pal, save_pal_outp
 ctx_pal = simulate_in_pal(ctx)
 plot_system_observation_pal(ctx_pal, cfg=cfg)  # cfg["plot"]["pal_*"], output save paths
 save_pal_outputs(ctx_pal, out_dir)             # FITS + tracer.json only
+# writes data_{gwemfish,pal}.fits (+ psf_*/noise_map_*); dataset="gwemfish"|"pal" narrows it
 ```
 
 Examples: `example_pal_mirror.py`, `example_psf_plot_and_pal.py`.

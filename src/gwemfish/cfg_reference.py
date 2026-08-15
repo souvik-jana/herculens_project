@@ -122,8 +122,14 @@ COMPLETE_CFG = {
         # dict -> setup_psf(**...) -> ctx["lens_image"].PSF (fixed for the whole run).
         #
         # Default (Gaussian):
-        #   {"psf_type": "GAUSSIAN", "fwhm": 0.2, "pixel_size": 0.4}
+        #   {"psf_type": "GAUSSIAN", "fwhm": 0.2}
         #   fwhm [arcsec], pixel_size [arcsec]; optional truncation (sigma units).
+        #   pixel_size MUST equal pixel_grid_kwargs["pix_scl"]: it is the pixel scale the
+        #   kernel array is rendered on and nothing resamples it onto the image grid, so a
+        #   mismatch leaves PSF.kernel_point_source (what plot_psf draws and what the PAL
+        #   mirror injects) sampled on the wrong grid. Omit it and setup_em_observation
+        #   fills it in from pix_scl; give a different value and it raises. For a sub-pixel
+        #   PSF use PIXEL + kernel_supersampling_factor below, not a smaller pixel_size.
         #
         # Custom / instrument PSF (PIXEL):
         #   {"psf_type": "PIXEL", "kernel_point_source": my_kernel}
@@ -140,7 +146,9 @@ COMPLETE_CFG = {
         #   supersampling_convolution=True. Mismatched factors are not an error:
         #   herculens discards the supplied kernel and interpolates a replacement
         #   (setup_em_observation warns). Fine kernel must be odd-sized;
-        #   (n_coarse - 1) * factor + 1 is a safe size.
+        #   (n_coarse - 1) * factor + 1 is a safe size. factor must be a positive INTEGER
+        #   (the degrade step averages whole pixels), and pixel_size is ignored for PIXEL --
+        #   the kernel carries its own sampling.
         #
         # No convolution:
         #   {"psf_type": "NONE"}
@@ -148,13 +156,20 @@ COMPLETE_CFG = {
         # See PSF_EXAMPLES below and examples/scripts/example_pixel_psf.py,
         # example_psf_plot_and_pal.py. Verify with plot_psf(ctx) or
         # ctx["lens_image"].PSF.kernel_point_source after setup_em_observation.
-        "psf_kwargs": {"psf_type": "GAUSSIAN", "fwhm": 0.2, "pixel_size": 0.4},
+        "psf_kwargs": {"psf_type": "GAUSSIAN", "fwhm": 0.2},  # pixel_size defaults to pix_scl
         "noise_simu_kwargs": {"npix": 20, "background_rms": 1e-2, "exposure_time": 1e3},
         # Inference-time noise: background_rms=None means it gets SAMPLED (noise_sigma_bkg prior)
         # rather than held fixed -- set a float here (or via cfg["priors"]["noise_sigma_bkg"]) to
         # fix it instead.
         "noise_inf_kwargs": {"npix": 20, "background_rms": None, "exposure_time": 1e3},
-        "kwargs_numerics": {"supersampling_factor": 1},  # dict -> herculens numerics kwargs
+        # dict -> herculens numerics kwargs. supersampling_factor=1 is the default and
+        # should stay unless there is a reason to raise it; add
+        # "supersampling_convolution": True alongside a factor > 1 to convolve on the
+        # subgrid (required when the PSF is narrower than a pixel).
+        #   recommend_supersampling(cfg)          -> diagnostics + suggested setting
+        #   check_supersampling_convergence(cfg)  -> measured convergence across factors
+        # Both are advisory and never modify the cfg they are given.
+        "kwargs_numerics": {"supersampling_factor": 1},
         "exposure_time": 1e3,  # float, seconds. Passed to simulate_em separately from noise kwargs.
         # (x, y) arcsec: EM source-light center used to derive EM image positions via the lens
         # equation (truth_params['x_image_true_em'] / ['y_image_true_em']). In practice
@@ -285,6 +300,11 @@ COMPLETE_CFG = {
                                                # e.g. ["EPL", "SHEAR"], ["SIS"], ["NFW", "SHEAR"].
                                                # Determines parameter_layout's lens0_*/lens1_*/...
                                                # blocks 1:1 with use_parameter_layout=True.
+                                               # Any length/order. The opt-in PAL mirror converts
+                                               # every entry (pal_bridge.MASS_PROFILE_BUILDERS:
+                                               # EPL, SIE, SIS, NIE, SHEAR, SHEAR_GAMMA_PSI,
+                                               # CONVERGENCE, POINT_MASS, MULTIPOLE, PIEMD, DPIE)
+                                               # and raises on the rest (GAUSSIAN, PIXELATED*).
         # List[dict], same length as lens_model_list. Sparse entries are OK: missing keys are
         # filled from config._DEFAULT_KWARGS_BY_LENS_MODEL per profile name (e.g. EPL defaults
         # e1=e2=0, gamma=2.0, center_x=center_y=0.0) so the solver/herculens always sees complete
@@ -410,8 +430,11 @@ COMPLETE_CFG = {
         "save_psf_plot_path": None,      # str or None, .png. plot_psf(): PSF kernel linear+log10.
         # PAL mirror (opt-in, after simulate_in_pal): plot_system_observation_pal() output.
         # None => display only; str => save PNG(s) under output_dir (dirname of path used).
-        "save_pal_dataset_plot_path": None,  # saves dataset_subplot_pal / _gwemfish when pal_dataset="both"
-        "save_pal_tracer_plot_path": None,
+        # Both accept a bare filename (written under output_dir, or the cwd if unset)
+        # or a path. The dataset plot ignores the basename and writes
+        # dataset_subplot_pal / _gwemfish, since pal_dataset="both" produces two files.
+        "save_pal_dataset_plot_path": None,
+        "save_pal_tracer_plot_path": None,  # basename honoured (renamed after PAL writes it)
         "json_path": None,  # str or None. Pipeline JSON (injection + setup + samples + truths).
                             # Same auto-method-tagging as save_samples_path/save_truths_path
                             # inside run_inference. Legacy alias: "save_pipeline_json_path".
@@ -436,10 +459,15 @@ COMPLETE_CFG = {
     # After EM (+ optional GW) simulation:
     #   ctx_pal = simulate_in_pal(ctx)              # gwemfish.pal_bridge; lazy autolens import
     #   plot_system_observation_pal(ctx_pal, cfg=CFG)  # reads cfg["plot"]["pal_*"] + output save paths
-    #   save_pal_outputs(ctx_pal, out_dir)          # data.fits, psf.fits, noise_map.fits, tracer.json
+    #   save_pal_outputs(ctx_pal, out_dir)          # data_{gwemfish,pal}.fits + psf_*/noise_map_*,
+    #                                               # tracer.json; dataset="gwemfish"|"pal" narrows it.
+    #                                               # Fit data_gwemfish.fits (pal-infer golden rule).
     #
     # ctx_pal keys: tracer, grid, psf, dataset_pal, dataset_gwemfish, dataset_clean, match_stats, ...
     # match_stats: model_* (noiseless image), noise_map_*, noise_z_std, psf_* (kernel cross-check).
+    # The PAL lens galaxy mirrors every profile in lens["lens_model_list"] (any length/order); see
+    # pal_bridge.MASS_PROFILE_BUILDERS for the supported names and the gwemfish-pal skill for the
+    # per-profile conversion rules.
     # Set em.psf_kwargs psf_type="PIXEL" + kernel_point_source for custom/real PSFs; the same kernel
     # is injected into PAL (Route 1). simulate_in_pal mirrors em.kwargs_numerics supersampling via
     # PAL over_sample_size, so model_max_rel_diff stays at the few x 1e-3 budget for any
@@ -558,7 +586,8 @@ COMPLETE_CFG = {
 PSF_EXAMPLE_GAUSSIAN = {
     "psf_type": "GAUSSIAN",
     "fwhm": 0.2,
-    "pixel_size": 0.4,
+    # "pixel_size": omitted on purpose -- setup_em_observation sets it to pix_scl. Give a
+    # value only to assert it, and it must equal pix_scl (anything else raises).
     # "truncation": 3.0,  # optional, sigma units
 }
 
@@ -705,7 +734,7 @@ CFG = {
         # If omitted in your own cfg, pipeline uses package defaults.
         "pixel_grid_kwargs": {"npix": 20, "pix_scl": 0.4},
         # psf_type: GAUSSIAN | PIXEL (kernel_point_source) | NONE
-        "psf_kwargs": {"psf_type": "GAUSSIAN", "fwhm": 0.2, "pixel_size": 0.4},
+        "psf_kwargs": {"psf_type": "GAUSSIAN", "fwhm": 0.2},  # pixel_size defaults to pix_scl
         "noise_simu_kwargs": {"npix": 20, "background_rms": 0.005, "exposure_time": 1000},
         "noise_inf_kwargs": {"npix": 20, "background_rms": None, "exposure_time": 1000},
         "kwargs_numerics": {"supersampling_factor": 1},

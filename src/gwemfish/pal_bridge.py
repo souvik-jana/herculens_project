@@ -13,6 +13,10 @@ default pipeline -- the user feeds a ctx explicitly:
 Conversion rules ported from the numerically verified helpers in
 lensing-mock/scripts/pal_utils.py (15/15 checks in compare_gwemfish_pal.py).
 HCL = herculens/gwemfish (lenstronomy convention), PAL = PyAutoLens.
+
+The lens galaxy mirrors every profile in cfg["lens"]["lens_model_list"], whatever its
+length or order -- see MASS_PROFILE_BUILDERS for the per-profile rules (each checked
+against the herculens deflection angles) and for the names that have no PAL analogue.
 All autolens imports are lazy so importing gwemfish stays lightweight.
 """
 
@@ -21,7 +25,7 @@ import os
 
 import numpy as np
 
-from .simple_pipeline import compute_noise_snr_maps, _deep_merge_dict, _ensure_parent_dir, _resolve_output_path
+from .simple_pipeline import compute_noise_snr_maps, _deep_merge_dict, _resolve_output_path
 
 
 def _default_pal_plot_cfg():
@@ -100,6 +104,7 @@ def make_sersic_light(ks, pix_scl):
 
 
 def make_lens_mass(kl):
+    """HCL ``EPL`` -> PAL PowerLaw (Isothermal for gamma == 2, the analytic case)."""
     import autolens as al
 
     gamma = kl["gamma"]
@@ -119,22 +124,177 @@ def make_lens_mass(kl):
     )
 
 
-def make_lens_galaxy(zl, kwargs_lens, kwargs_lens_light, lens_model_list, pix_scl):
-    """EPL mass + (shear or convergence sheet) + lens Sersic light."""
+def make_sie(kl):
+    return make_lens_mass({**kl, "gamma": 2.0})
+
+
+def make_sis(kl):
     import autolens as al
 
-    kl = kwargs_lens[0]
-    kll = kwargs_lens_light[0]
-    if lens_model_list[1] == "SHEAR":
-        second = {"external": al.mp.ExternalShear(
-            gamma_1=kwargs_lens[1]["gamma1"], gamma_2=kwargs_lens[1]["gamma2"])}
-    else:
-        second = {"sheet": al.mp.MassSheet(kappa=kwargs_lens[1]["kappa"])}
+    return al.mp.IsothermalSph(
+        centre=centre(kl["center_x"], kl["center_y"]),
+        einstein_radius=float(kl["theta_E"]),
+    )
+
+
+def make_nie(kl):
+    """Core radius carries a 1/sqrt(q): HCL uses s = r_core / sqrt(q) internally."""
+    import autolens as al
+
+    q = axis_ratio(kl["e1"], kl["e2"])
+    return al.mp.IsothermalCore(
+        centre=centre(kl["center_x"], kl["center_y"]),
+        ell_comps=ell_comps(kl["e1"], kl["e2"]),
+        einstein_radius=float(kl["theta_E"]) * (1.0 + q) / (2.0 * math.sqrt(q)),
+        core_radius=float(kl["r_core"]) / math.sqrt(q),
+    )
+
+
+def make_shear(kl):
+    import autolens as al
+
+    # PAL's ExternalShear has no centre, so an offset shear cannot be represented.
+    if float(kl.get("ra_0", 0.0)) != 0.0 or float(kl.get("dec_0", 0.0)) != 0.0:
+        raise ValueError(
+            "SHEAR with non-zero ra_0/dec_0 has no PAL equivalent "
+            "(al.mp.ExternalShear is centred at the origin)."
+        )
+    return al.mp.ExternalShear(gamma_1=float(kl["gamma1"]), gamma_2=float(kl["gamma2"]))
+
+
+def make_shear_gamma_psi(kl):
+    g, psi = float(kl["gamma_ext"]), float(kl["psi_ext"])
+    return make_shear({
+        "gamma1": g * math.cos(2.0 * psi),
+        "gamma2": g * math.sin(2.0 * psi),
+        "ra_0": kl.get("ra_0", 0.0),
+        "dec_0": kl.get("dec_0", 0.0),
+    })
+
+
+def make_convergence(kl):
+    import autolens as al
+
+    return al.mp.MassSheet(
+        centre=centre(kl.get("ra_0", 0.0), kl.get("dec_0", 0.0)),
+        kappa=float(kl["kappa"]),
+    )
+
+
+def make_point_mass(kl):
+    import autolens as al
+
+    return al.mp.PointMass(
+        centre=centre(kl["center_x"], kl["center_y"]),
+        einstein_radius=float(kl["theta_E"]),
+    )
+
+
+def make_multipole(kl):
+    """Pure multipole term: PAL ties the amplitude to einstein_radius=1, slope=2."""
+    import autolens as al
+
+    m = int(kl["m"])
+    if m < 2:
+        raise ValueError(f"MULTIPOLE m={m} is not usable (herculens returns non-finite for m < 2).")
+    a_m, phi_m = float(kl["a_m"]), float(kl["phi_m"])
+    return al.mp.PowerLawMultipole(
+        m=m,
+        centre=centre(kl["center_x"], kl["center_y"]),
+        einstein_radius=1.0,
+        slope=2.0,
+        multipole_comps=(a_m * math.sin(m * phi_m), a_m * math.cos(m * phi_m)),
+    )
+
+
+def ell_comps_from_q_phi(q, phi):
+    """PIEMD/DPIE carry (q, phi) instead of (e1, e2)."""
+    e = (1.0 - float(q)) / (1.0 + float(q))
+    return (e * math.sin(2.0 * float(phi)), e * math.cos(2.0 * float(phi)))
+
+
+def make_piemd(kl):
+    """b0 is the herculens lensing-strength prefactor, q-independent."""
+    import autolens as al
+
+    te, rc = float(kl["theta_E"]), float(kl["r_core"])
+    return al.mp.PIEMass(
+        centre=centre(kl["center_x"], kl["center_y"]),
+        ell_comps=ell_comps_from_q_phi(kl["q"], kl["phi"]),
+        ra=rc,
+        b0=math.sqrt(te ** 2 + rc ** 2) + rc,
+    )
+
+
+def make_dpie(kl):
+    """PAL folds an extra rs/(rs - ra) into kappa, so b0 = prefac * (rs - ra) / rs."""
+    import autolens as al
+
+    te, rc, rt = float(kl["theta_E"]), float(kl["r_core"]), float(kl["r_trunc"])
+    prefac = te ** 2 / (
+        (math.sqrt(rc ** 2 + te ** 2) - rc) - (math.sqrt(rt ** 2 + te ** 2) - rt)
+    )
+    return al.mp.dPIEMass(
+        centre=centre(kl["center_x"], kl["center_y"]),
+        ell_comps=ell_comps_from_q_phi(kl["q"], kl["phi"]),
+        ra=rc,
+        rs=rt,
+        b0=prefac * (rt - rc) / rt,
+    )
+
+
+# HCL profile name -> PAL builder. Every entry is verified against the herculens
+# deflection angles to machine precision; herculens profiles with no PAL analogue
+# (GAUSSIAN potential, PIXELATED*) are deliberately absent and raise below.
+MASS_PROFILE_BUILDERS = {
+    "EPL": make_lens_mass,
+    "SIE": make_sie,
+    "SIS": make_sis,
+    "NIE": make_nie,
+    "SHEAR": make_shear,
+    "SHEAR_GAMMA_PSI": make_shear_gamma_psi,
+    "CONVERGENCE": make_convergence,
+    "POINT_MASS": make_point_mass,
+    "MULTIPOLE": make_multipole,
+    "PIEMD": make_piemd,
+    "DPIE": make_dpie,
+}
+
+
+def make_lens_galaxy(zl, kwargs_lens, kwargs_lens_light, lens_model_list, pix_scl):
+    """Every mass profile in ``lens_model_list`` + the lens Sersic light.
+
+    Any length and any order: ``al.Galaxy`` sums every mass profile it is given,
+    so each entry becomes its own ``mass_{i}_{name}`` component. Unsupported
+    profile names raise rather than being skipped.
+    """
+    import autolens as al
+
+    if len(kwargs_lens) != len(lens_model_list):
+        raise ValueError(
+            f"len(kwargs_lens)={len(kwargs_lens)} != "
+            f"len(lens_model_list)={len(lens_model_list)}"
+        )
+    if len(kwargs_lens_light) != 1:
+        raise ValueError(
+            f"pal_bridge converts a single lens light profile, got "
+            f"{len(kwargs_lens_light)}."
+        )
+
+    mass_profiles = {}
+    for i, name in enumerate(lens_model_list):
+        builder = MASS_PROFILE_BUILDERS.get(name)
+        if builder is None:
+            raise ValueError(
+                f"pal_bridge cannot convert lens profile '{name}' to PyAutoLens. "
+                f"Supported: {sorted(MASS_PROFILE_BUILDERS)}."
+            )
+        mass_profiles[f"mass_{i}_{name.lower()}"] = builder(kwargs_lens[i])
+
     return al.Galaxy(
         redshift=zl,
-        mass=make_lens_mass(kl),
-        light=make_sersic_light(kll, pix_scl),
-        **second,
+        light=make_sersic_light(kwargs_lens_light[0], pix_scl),
+        **mass_profiles,
     )
 
 
@@ -328,8 +488,11 @@ def simulate_in_pal(ctx, seed=None):
             "hcl_supersampling_convolution": bool(
                 numerics.get("supersampling_convolution", False)
             ),
+            # From the live PSF, not psf_kwargs: herculens ignores a kernel supplied
+            # with psf_type="GAUSSIAN" (and reports 0), so the cfg value can be stale.
+            "psf_type": str(ctx["lens_image"].PSF.psf_type),
             "kernel_supersampling_factor": int(
-                em["psf_kwargs"].get("kernel_supersampling_factor", 1)
+                ctx["lens_image"].PSF.kernel_supersampling_factor
             ),
         },
     }
@@ -399,7 +562,8 @@ def plot_system_observation_pal(ctx_pal, *, cfg=None):
             kwargs = {"dataset": ctx_pal[ds_key]}
             if save_dataset:
                 resolved = _resolve_output_path(save_dataset, output_dir)
-                plot_dir = os.path.dirname(resolved) if resolved else (output_dir or ".")
+                # A bare filename has no dirname, so fall back rather than makedirs("").
+                plot_dir = os.path.dirname(resolved) or output_dir or "."
                 os.makedirs(plot_dir, exist_ok=True)
                 kwargs["output_path"] = plot_dir
                 kwargs["output_filename"] = fname
@@ -408,20 +572,38 @@ def plot_system_observation_pal(ctx_pal, *, cfg=None):
 
     if plot_cfg.get("pal_plot_tracer", True):
         kwargs = {"tracer": ctx_pal["tracer"], "grid": ctx_pal["grid"]}
+        resolved = None
         if save_tracer:
             resolved = _resolve_output_path(save_tracer, output_dir)
-            plot_dir = os.path.dirname(resolved) if resolved else (output_dir or ".")
-            _ensure_parent_dir(save_tracer if not output_dir else os.path.join(plot_dir, "tracer.png"))
+            plot_dir = os.path.dirname(resolved) or output_dir or "."
             os.makedirs(plot_dir, exist_ok=True)
             kwargs["output_path"] = plot_dir
             kwargs["output_format"] = "png"
         aplt.subplot_tracer(**kwargs)
 
+        # aplt.subplot_tracer has no output_filename argument (unlike
+        # subplot_imaging_dataset) and always writes tracer.png, so honour the
+        # configured name by renaming. Left alone if PAL changes its default.
+        if resolved is not None:
+            written = os.path.join(plot_dir, "tracer.png")
+            if written != resolved and os.path.exists(written):
+                os.replace(written, resolved)
 
-def save_pal_outputs(ctx_pal, out_dir):
+
+def save_pal_outputs(ctx_pal, out_dir, dataset="both"):
     """Write PAL dataset files for a later fit: FITS + tracer.json.
 
-    Use ``plot_system_observation_pal`` for figures.
+    Which dataset ends up on disk is explicit in the filename, because the two are
+    *not* interchangeable for a fit:
+
+        dataset="gwemfish"  data_gwemfish.fits, psf_gwemfish.fits, noise_map_gwemfish.fits
+                            -- the exact gwemfish data + model-based sigma. Fit this one
+                               to stay comparable to gwemfish inference (pal-infer golden rule).
+        dataset="pal"       data_pal.fits, psf_pal.fits, noise_map_pal.fits
+                            -- PAL's own simulation and noise realization.
+        dataset="both"      all of the above (default).
+
+    ``tracer.json`` is always written. Use ``plot_system_observation_pal`` for figures.
     """
     import autolens as al
     import autolens.plot as aplt
@@ -429,11 +611,22 @@ def save_pal_outputs(ctx_pal, out_dir):
     out_dir = str(out_dir)
     os.makedirs(out_dir, exist_ok=True)
 
-    aplt.fits_imaging(
-        dataset=ctx_pal["dataset_pal"],
-        data_path=os.path.join(out_dir, "data.fits"),
-        psf_path=os.path.join(out_dir, "psf.fits"),
-        noise_map_path=os.path.join(out_dir, "noise_map.fits"),
-        overwrite=True,
-    )
+    dataset = str(dataset).strip().lower()
+    if dataset not in ("both", "gwemfish", "pal"):
+        raise ValueError(f"dataset must be 'both', 'gwemfish' or 'pal', got '{dataset}'.")
+
+    jobs = []
+    if dataset in ("gwemfish", "both"):
+        jobs.append(("dataset_gwemfish", "gwemfish"))
+    if dataset in ("pal", "both"):
+        jobs.append(("dataset_pal", "pal"))
+
+    for ds_key, suffix in jobs:
+        aplt.fits_imaging(
+            dataset=ctx_pal[ds_key],
+            data_path=os.path.join(out_dir, f"data_{suffix}.fits"),
+            psf_path=os.path.join(out_dir, f"psf_{suffix}.fits"),
+            noise_map_path=os.path.join(out_dir, f"noise_map_{suffix}.fits"),
+            overwrite=True,
+        )
     al.output_to_json(obj=ctx_pal["tracer"], file_path=os.path.join(out_dir, "tracer.json"))

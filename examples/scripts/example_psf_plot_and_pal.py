@@ -17,7 +17,8 @@ For a default GAUSSIAN PSF instead of PIXEL, drop USE_CUSTOM_PSF or set it False
 Outputs (gitignored) under examples/outputs/psf_plot_and_pal/:
   system_observation.png, psf.png, noise_snr_standalone.png
   dataset_subplot_pal.png, dataset_subplot_gwemfish.png, tracer.png
-  data.fits, noise_map.fits, psf.fits, tracer.json
+  data_gwemfish.fits, noise_map_gwemfish.fits, psf_gwemfish.fits  (fit this one)
+  data_pal.fits, noise_map_pal.fits, psf_pal.fits, tracer.json
   match_stats.txt
 
 Later PAL fit: use ctx_pal["dataset_gwemfish"] (exact gwemfish data + model-based
@@ -89,8 +90,8 @@ CFG = make_default_cfg()
 CFG["output"]["output_dir"] = OUTPUT_DIR
 
 pix_scl = CFG["em"]["pixel_grid_kwargs"]["pix_scl"]
+fwhm = CFG["em"]["psf_kwargs"]["fwhm"]
 if USE_CUSTOM_PSF:
-    fwhm = CFG["em"]["psf_kwargs"]["fwhm"]
     sigma_px = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0))) / pix_scl
     if KERNEL_SUPERSAMPLING > 1:
         my_kernel = gaussian_kernel_supersampled(5, sigma_px, KERNEL_SUPERSAMPLING)
