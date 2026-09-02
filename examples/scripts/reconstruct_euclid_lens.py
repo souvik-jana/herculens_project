@@ -165,6 +165,11 @@ sample_cfg["em"]["noise_inf_kwargs"] = {"npix": NPIX, "background_rms": None, "e
 sample_cfg["em"]["exposure_time"] = EUCLID_T_EXP
 sample_cfg["em"]["seed"] = 87651
 sample_cfg["gw"]["image_box_half_width"] = 5.0
+# Source-plane prior box. Naked-cusp systems sit close to the caustic (555 has only
+# 0.042 arcsec of margin), and a box reaching past it produces NUTS divergences that
+# look like a solver failure. The diagnostic prints the actual margin; 0.03 is inside
+# it for the catalog systems used here.
+sample_cfg["gw"]["source_box_half_width"] = 0.03
 sample_cfg["gw"]["error_scales"]["sigma_dL_eff"] = 0.1
 sample_cfg["gw"]["error_scales"]["sigma_td"] = 0.001
 sample_cfg["use_parameter_layout"] = True
@@ -238,11 +243,22 @@ ctx_gw_source_em = copy.deepcopy(ctx_gw_source)
 ctx_gw_source_gw = copy.deepcopy(ctx_gw_source)
 ctx_gw_source_both = copy.deepcopy(ctx_gw_source)
 
-ctx_gw_source_gw["cfg"]["priors"] = {
+# How many free parameters the GW data can actually carry.
+#
+# A GW-only lens supplies (n_images - 1) time delays plus n_images effective
+# distances, so 2*n_images - 1 numbers in total: 7 for a quad, but only 5 for a
+# 3-image (naked cusp) system and 3 for a double. T_star, dL, y0gw and y1gw are
+# always free, so a quad has room for one lens-shape parameter on top and a 3-image
+# system does not -- freeing lens0_e2 there makes the Fisher matrix degenerate and
+# the 1-sigma widths come back ~20x the parameter values. The diagnostic reports
+# this as "N free vs M GW observables"; here we simply respect it.
+N_IMG = len(ctx_gw_source_gw["x_img_gw"])
+N_GW_OBS = 2 * N_IMG - 1
+
+priors_gw = {
     "lens0_gamma": float(tp["lens0_gamma"]),
     "lens0_theta_E": float(tp["lens0_theta_E"]),
     "lens0_e1": float(tp["lens0_e1"]),
-    "lens0_e2": dist.Uniform(-0.9, 0.9),
     "lens0_center_x": 0.0,
     "lens0_center_y": 0.0,
     "lens1_gamma1": float(tp["lens1_gamma1"]),
@@ -250,6 +266,13 @@ ctx_gw_source_gw["cfg"]["priors"] = {
     "lens1_ra_0": 0.0,
     "lens1_dec_0": 0.0,
 }
+if N_GW_OBS > 5:
+    priors_gw["lens0_e2"] = dist.Uniform(-0.9, 0.9)
+else:
+    priors_gw["lens0_e2"] = float(tp["lens0_e2"])
+print(f"n_images={N_IMG} -> {N_GW_OBS} GW observables; "
+      f"lens0_e2 {'free' if N_GW_OBS > 5 else 'fixed at truth'}")
+ctx_gw_source_gw["cfg"]["priors"] = priors_gw
 
 MODE = "GW-only"
 METHOD = "fisher-source"

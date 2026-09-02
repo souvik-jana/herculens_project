@@ -8,6 +8,7 @@ herculens and solve for image positions given a source position.
 import copy as _copy
 import warnings
 
+import jax
 import jax.numpy as jnp
 from jaxtronomy.LensModel.lens_model import LensModel
 from jaxtronomy.LensModel.Solver.lens_equation_solver import LensEquationSolver
@@ -28,6 +29,35 @@ try:
 except ImportError:
     HELENS_AVAILABLE = False
     LensEquationSolver_helens = None
+
+
+def polish_truth_images(x_image, y_image, source_pos, kwargs_lens, mass_model,
+                        n_newton=8):
+    """Newton-refine setup-time image positions so they match the inference solver.
+
+    jaxtronomy returns roots good to ~1e-7, while the solver used inside the
+    likelihood Newton-polishes to machine precision. Left alone, that 1e-7 gap means
+    the *truth* parameters are not quite the peak of the likelihood: the Fisher
+    expansion gets built slightly off-centre, and the gradient at truth comes out at
+    ~0.05 sigma instead of ~1e-11. Measured on catalog system 555, where it also
+    showed up as a 1.75 s time-delay residual.
+
+    Non-differentiable on purpose -- this runs once at setup, never inside a
+    likelihood.
+    """
+    from .differentiable_solver import newton_solve
+
+    beta = jnp.array([float(source_pos[0]), float(source_pos[1])])
+
+    def ray_shoot(x, y, kw):
+        return mass_model.ray_shooting(x, y, kw)
+
+    def refine(theta):
+        return newton_solve(beta, kwargs_lens, ray_shoot, theta, n_newton=n_newton)
+
+    thetas = jnp.stack([jnp.atleast_1d(x_image), jnp.atleast_1d(y_image)], axis=-1)
+    polished = jax.vmap(refine)(thetas)
+    return polished[:, 0], polished[:, 1]
 
 
 def normalize_solver_params(solver_params=None, n_images=None):
@@ -246,7 +276,12 @@ def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos,
     # Convert to JAX arrays
     x_image_true = jnp.array(x_image_true)
     y_image_true = jnp.array(y_image_true)
-    
+
+    # Refine to machine precision so the truth matches what the likelihood's solver
+    # produces; otherwise the Fisher expansion is built ~1e-7 off the actual peak.
+    x_image_true, y_image_true = polish_truth_images(
+        x_image_true, y_image_true, source_pos, kwargs_lens, lens_mass_model)
+
     return kwargs_lens, x_image_true, y_image_true, lens_mass_model
 
 # def setup_lens_mst(lens_model_list, kwargs_lens, zl, zs, source_pos,
