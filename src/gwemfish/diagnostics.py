@@ -327,21 +327,30 @@ def check_conditioning(H0, keys, u0, n_images, mode, condition_limit=None):
     cond = (float(np.abs(finite).max() / np.abs(finite).min())
             if finite.size and np.abs(finite).min() > 0 else float("inf"))
 
+    # A positive eigenvalue only means something if it is meaningfully positive.
+    # Unconstrained directions sit at |lambda|/|lambda_max| ~ 1e-16, i.e. numerically
+    # zero, and their *sign* is round-off -- calling that a saddle would be reading
+    # noise. Only count eigenvalues above the float64 noise floor of this matrix.
+    biggest = float(np.abs(eig).max()) if eig.size else 0.0
+    noise_floor = biggest * 1e-12
+    genuinely_positive = int(np.sum(eig > noise_floor))
+
     report = {
         "ok": True,
         "messages": [],
         "n_free": n_free,
         "n_gw_observables": n_obs,
         "condition_number": cond,
-        "positive_eigenvalues": int(np.sum(eig > 0)),
+        "positive_eigenvalues": genuinely_positive,
+        "near_zero_eigenvalues": int(np.sum(np.abs(eig) <= noise_floor)),
     }
 
-    if report["positive_eigenvalues"]:
+    if genuinely_positive:
         report["ok"] = False
         report["messages"].append(
-            f"{report['positive_eigenvalues']} of {n_free} Hessian eigenvalues are "
-            "positive: the truth is a saddle, not a maximum. The expansion point is "
-            "wrong, not merely poorly constrained."
+            f"{genuinely_positive} of {n_free} Hessian eigenvalues are positive by "
+            "more than round-off: the truth is a saddle, not a maximum, so the "
+            "expansion point is wrong rather than merely poorly constrained."
         )
 
     budget = (f"{n_free} free parameters against {n_obs} GW observables "
