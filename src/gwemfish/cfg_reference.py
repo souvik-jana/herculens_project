@@ -91,11 +91,19 @@ import numpyro.distributions as dist
 #           'nautilus-image'         -- Nested sampling, image-plane GW (image_x*/image_y*). All modes.
 #
 # The '-source' family (fisher-source/deriv-approx-source/hmc-source/hmc-informed-source) and
-# 'nautilus-source' are conceptually related (both sample y0gw/y1gw) but dispatch through completely
-# different code paths: the '-source' family goes through _build_inference_probmodel_source_plane
-# (differentiable helens solver, full NUTS/Taylor machinery); nautilus-source goes through
-# nautilus_source_inference (scipy-prior nested sampling, no gradients, its own helens/jaxtronomy
-# solver backend choice).
+# 'nautilus-source' both sample y0gw/y1gw and both solve the lens equation inside the
+# likelihood. They still dispatch through different code paths -- the '-source' family via
+# _build_inference_probmodel_source_plane (full NUTS/Taylor machinery), nautilus-source via
+# nautilus_source_inference (scipy-prior nested sampling, no gradients) -- but they now build
+# the SAME solver from the same cfg["gw"]["solver_params"], so they no longer disagree about
+# where the images are.
+#
+# The image finder is chosen by solver_params["backend"] ('helens' triangle search or
+# jaxtronomy's closed-form/grid solver); it is not fixed to helens. Differentiability does not
+# come from the finder at all -- the finder's output is stop_gradient-ed, and a Newton polish
+# with jax.lax.custom_root re-attaches derivatives via the implicit function theorem. That is
+# why the finder is swappable and why nautilus-source, which needs no derivatives, may skip
+# the polish (cfg["nautilus"]["polish"]) while the four gradient-based methods may not.
 # ---------------------------------------------------------------------------
 
 
