@@ -389,6 +389,11 @@ def make_default_cfg() -> Dict[str, Any]:
             # built at truth, so a broken solve there corrupts everything downstream
             # with nothing to signal it.
             "diagnostics": "warn",
+            # Per-check thresholds; anything omitted keeps gwemfish's default.
+            # See gwemfish.diagnostics.DEFAULT_THRESHOLDS for the values and how they
+            # were calibrated. Keys: position_tol (arcsec), observable_rtol,
+            # condition_limit, gradient_sigma.
+            "diagnostics_thresholds": {},
         },
         "plot": {
             "plot_mode": "groupwise",  # groupwise | combined | subset

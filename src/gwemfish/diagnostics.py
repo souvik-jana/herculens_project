@@ -256,16 +256,47 @@ def check_gradient(g0, H0, keys, threshold=0.5):
     return report
 
 
-# Condition number above which the Fisher's weak directions stop being meaningful.
-# Calibrated against measured runs rather than picked: a double with 3 free
-# parameters gives 4e1, a quad with 5 gives 2.5e4, and catalog system 555 with 4 free
-# gives 5.2e8 while still returning usable widths (sigma/truth 0.23-1.14). The same
-# system with 5 free -- one per observable -- jumps to 9.0e12 and the widths blow up
-# to 14-32x the parameter values. 1e10 sits in that gap.
-COND_LIMIT = 1e10
+# Default thresholds for the five checks. Override any subset via
+# cfg["inference"]["diagnostics_thresholds"]; anything you leave out keeps the value
+# here. They are starting points measured on real systems, not universal truths --
+# raise them when a system you trust trips a check for a reason you understand.
+DEFAULT_THRESHOLDS = {
+    # Check 1: how far solved image positions may sit from the simulated ones,
+    # arcsec. The polished solver reproduces them to ~1e-14, so 1e-4 is loose on
+    # purpose -- it is meant to catch a wrong image, not numerical noise.
+    "position_tol": 1e-4,
+    # Check 2: relative tolerance on time delays and dL_eff recomputed from the
+    # solved positions.
+    "observable_rtol": 1e-3,
+    # Check 4: condition number above which the Fisher's weak directions stop being
+    # meaningful. Calibrated against measured runs rather than picked: a double with
+    # 3 free parameters gives 4e1, a quad with 5 gives 2.5e4, and catalog system 555
+    # with 4 free gives 5.2e8 while still returning usable widths (sigma/truth
+    # 0.23-1.14). The same system with 5 free -- one per observable -- jumps to
+    # 9.0e12 and the widths blow up to 14-32x the parameter values. 1e10 sits in
+    # that gap.
+    "condition_limit": 1e10,
+    # Check 5: |g0| / sqrt(|diag H0|), i.e. how many 1-sigma steps the truth sits
+    # from the peak. A correct setup lands at ~1e-12; 0.5 flags a genuinely
+    # off-centre expansion rather than round-off.
+    "gradient_sigma": 0.5,
+}
 
 
-def check_conditioning(H0, keys, u0, n_images, mode):
+def resolve_thresholds(overrides=None):
+    """Merge user threshold overrides onto DEFAULT_THRESHOLDS."""
+    merged = dict(DEFAULT_THRESHOLDS)
+    for key, value in (overrides or {}).items():
+        if key not in DEFAULT_THRESHOLDS:
+            raise ValueError(
+                f"Unknown diagnostics threshold {key!r}. "
+                f"Valid keys: {sorted(DEFAULT_THRESHOLDS)}."
+            )
+        merged[key] = value
+    return merged
+
+
+def check_conditioning(H0, keys, u0, n_images, mode, condition_limit=None):
     """Check 5: can this observation actually constrain this many free parameters?
 
     A GW-only lens gives ``n_images - 1`` time delays plus ``n_images`` effective
@@ -328,10 +359,12 @@ def check_conditioning(H0, keys, u0, n_images, mode):
             "unconstrained by construction. Fix a parameter via cfg['priors'] or add "
             "EM data."
         )
-    elif cond > COND_LIMIT:
+    elif cond > (condition_limit or DEFAULT_THRESHOLDS['condition_limit']):
         report["ok"] = False
         report["messages"].append(
-            f"scaled Fisher condition number {cond:.1e} -- some directions are barely "
+            f"scaled Fisher condition number {cond:.1e} (limit "
+            f"{condition_limit or DEFAULT_THRESHOLDS['condition_limit']:.1e}) -- "
+            "some directions are barely "
             "constrained, so their widths are close to meaningless even though the "
             f"matrix inverts. {budget}; freeing one fewer parameter usually fixes it."
         )
@@ -413,7 +446,7 @@ def format_report(report):
 
 
 def diagnose_system(ctx, cfg_full, method, mode, solver=None, solver_params=None,
-                    g0=None, H0=None, keys=None, level="warn"):
+                    g0=None, H0=None, keys=None, level="warn", thresholds=None):
     """Run the pre-inference checks and report.
 
     ``level`` is ``"raise"`` (abort on failure), ``"warn"`` (default) or ``"off"``.
@@ -422,7 +455,12 @@ def diagnose_system(ctx, cfg_full, method, mode, solver=None, solver_params=None
     if level == "off":
         return {"level": "off", "skipped": True}
 
-    report = {"level": level, "method": method, "mode": mode, "ok": True}
+    if thresholds is None:
+        thresholds = (cfg_full.get("inference", {}) or {}).get("diagnostics_thresholds")
+    thr = resolve_thresholds(thresholds)
+
+    report = {"level": level, "method": method, "mode": mode, "ok": True,
+              "thresholds": thr}
 
     gw_cfg = cfg_full.get("gw", {})
     lens_cfg = cfg_full.get("lens", {})
@@ -445,7 +483,8 @@ def diagnose_system(ctx, cfg_full, method, mode, solver=None, solver_params=None
         y_true = [float(truth_params[f"image_y{i+1}"]) for i in range(n_images)]
 
         img = check_images(solver, solver_params, kwargs_lens, source_pos, lens_gw,
-                           n_images, x_true, y_true, lens_center=lens_center)
+                           n_images, x_true, y_true, lens_center=lens_center,
+                           tol=thr["position_tol"])
         report["images"] = img
         report["ok"] &= img["ok"]
 
@@ -453,7 +492,8 @@ def diagnose_system(ctx, cfg_full, method, mode, solver=None, solver_params=None
         if img["n_distinct"] == n_images and gw_obs is not None:
             obs = check_observables(
                 img["x_solved"], img["y_solved"], kwargs_lens, lens_gw,
-                truth_params.get("T_star"), truth_params.get("dL"), gw_obs)
+                truth_params.get("T_star"), truth_params.get("dL"), gw_obs,
+                rtol=thr["observable_rtol"])
             report["observables"] = obs
             report["ok"] &= obs["ok"]
 
@@ -466,7 +506,7 @@ def diagnose_system(ctx, cfg_full, method, mode, solver=None, solver_params=None
             # Advisory only: a box past the caustic is a legitimate choice.
 
     if g0 is not None and H0 is not None and keys is not None:
-        grad = check_gradient(g0, H0, keys)
+        grad = check_gradient(g0, H0, keys, threshold=thr["gradient_sigma"])
         report["gradient"] = grad
         report["ok"] &= grad["ok"]
 
@@ -474,7 +514,8 @@ def diagnose_system(ctx, cfg_full, method, mode, solver=None, solver_params=None
         n_img = len([k for k in truth_params
                      if k.startswith("image_x") and k[7:].isdigit()])
         if u0 is not None and n_img:
-            cond = check_conditioning(H0, keys, u0, n_img, mode)
+            cond = check_conditioning(H0, keys, u0, n_img, mode,
+                                      condition_limit=thr["condition_limit"])
             report["conditioning"] = cond
             report["ok"] &= cond["ok"]
     else:

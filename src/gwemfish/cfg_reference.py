@@ -435,6 +435,19 @@ COMPLETE_CFG = {
         #   4 gradient     g0/sqrt|diag H0| ~ 0, i.e. truth really is at the peak
         # Checks 1-3 need a solver, so they are skipped for image-plane methods and EM-only;
         # check 4 needs a Fisher expansion, so it is skipped for the nautilus methods.
+        # Per-check thresholds. Override any subset; omitted keys keep the default.
+        # Defaults live in gwemfish.diagnostics.DEFAULT_THRESHOLDS and were calibrated
+        # on real systems rather than chosen: e.g. condition_limit 1e10 sits between a
+        # 3-image system with 4 free parameters (cond 5.2e8, widths sigma/truth
+        # 0.23-1.14, usable) and the same system with 5 free (cond 9.0e12, widths
+        # 14-32x the parameter values). Raise a threshold when a system you trust
+        # trips a check for a reason you understand.
+        "diagnostics_thresholds": {
+            # "position_tol": 1e-4,     # arcsec, check 1: solved vs simulated images
+            # "observable_rtol": 1e-3,  # check 2: time delays / dL_eff
+            # "condition_limit": 1e10,  # check 4: scaled Fisher condition number
+            # "gradient_sigma": 0.5,    # check 5: |g0|/sqrt|diag H0|
+        },
         "diagnostics": "warn",  # "warn" (default) | "raise" | "off".
                                 # "off" is unsafe for the '-source' family: their expansion is
                                 # built AT truth, so a bad solve there corrupts everything
