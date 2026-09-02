@@ -256,6 +256,15 @@ def check_gradient(g0, H0, keys, threshold=0.5):
     return report
 
 
+# Condition number above which the Fisher's weak directions stop being meaningful.
+# Calibrated against measured runs rather than picked: a double with 3 free
+# parameters gives 4e1, a quad with 5 gives 2.5e4, and catalog system 555 with 4 free
+# gives 5.2e8 while still returning usable widths (sigma/truth 0.23-1.14). The same
+# system with 5 free -- one per observable -- jumps to 9.0e12 and the widths blow up
+# to 14-32x the parameter values. 1e10 sits in that gap.
+COND_LIMIT = 1e10
+
+
 def check_conditioning(H0, keys, u0, n_images, mode):
     """Check 5: can this observation actually constrain this many free parameters?
 
@@ -267,16 +276,21 @@ def check_conditioning(H0, keys, u0, n_images, mode):
     1-sigma widths come back many times larger than the parameters themselves, which
     is easy to mistake for a solver bug.
 
-    The condition number is computed in a fractional basis (each parameter scaled by
-    |u0|), because the raw one is dominated by unit disparity -- dL ~ 3e4 Mpc next to
-    e2 ~ 0.6 -- and says nothing about whether the data constrain the model.
+    The condition number is measured after scaling each parameter by its own
+    1-sigma, ``1/sqrt(|H_ii|)``. The raw condition number is dominated by unit
+    disparity (dL ~ 3e4 Mpc next to e2 ~ 0.6) and says nothing about whether the data
+    constrain the model; scaling by |u0| instead would be equally misleading, because
+    a truth value near zero (y1gw is 1e-6) blows the number up for no physical
+    reason. What is left after this scaling is the correlation structure -- i.e.
+    genuine degeneracy between parameters.
     """
     H0 = np.asarray(H0, dtype=float)
     u0 = np.asarray(u0, dtype=float)
     n_free = len(keys)
     n_obs = 2 * int(n_images) - 1 if mode != "EM-only" else None
 
-    scale = np.where(np.abs(u0) > 0, np.abs(u0), 1.0)
+    diag = np.abs(np.diag(H0))
+    scale = np.where(diag > 0, 1.0 / np.sqrt(np.where(diag > 0, diag, 1.0)), 1.0)
     eig = np.linalg.eigvalsh(H0 * scale[:, None] * scale[None, :])
     finite = eig[np.isfinite(eig)]
     cond = (float(np.abs(finite).max() / np.abs(finite).min())
@@ -299,20 +313,27 @@ def check_conditioning(H0, keys, u0, n_images, mode):
             "wrong, not merely poorly constrained."
         )
 
-    if n_obs is not None and n_free >= n_obs:
+    budget = (f"{n_free} free parameters against {n_obs} GW observables "
+              f"({n_images} images -> {n_images - 1} time delays + "
+              f"{n_images} dL_eff)") if n_obs is not None else f"{n_free} free parameters"
+
+    # Counting alone does not decide this. An exactly-determined problem can be
+    # perfectly well conditioned -- a double with 3 free parameters against 3
+    # observables comes out at cond ~4e2 -- so the condition number is the arbiter
+    # and the count is the explanation for why it went bad.
+    if n_obs is not None and n_free > n_obs:
         report["ok"] = False
         report["messages"].append(
-            f"{n_free} free parameters against {n_obs} GW observables "
-            f"({n_images} images -> {n_images - 1} time delays + {n_images} dL_eff). "
-            "The Fisher matrix is degenerate, so the reported widths will be far "
-            "larger than the parameters themselves. Fix a parameter via cfg['priors'] "
-            "or add EM data."
+            f"{budget}: fewer observables than parameters, so some directions are "
+            "unconstrained by construction. Fix a parameter via cfg['priors'] or add "
+            "EM data."
         )
-    elif cond > 1e11:
+    elif cond > COND_LIMIT:
+        report["ok"] = False
         report["messages"].append(
-            f"scaled Fisher condition number {cond:.1e}: some directions are barely "
+            f"scaled Fisher condition number {cond:.1e} -- some directions are barely "
             "constrained, so their widths are close to meaningless even though the "
-            "matrix inverts."
+            f"matrix inverts. {budget}; freeing one fewer parameter usually fixes it."
         )
     return report
 
