@@ -148,13 +148,22 @@ def validate_helens_solver(solver, solver_params, kwargs_lens_truth,
         np.concatenate([x_sorted - x_truth_s, y_sorted - y_truth_s])
     )))
 
+    # Name the finder actually in use: this path is no longer helens-only.
+    finder = getattr(solver, "finder", None)
+    backend = {"HelensImageFinder": "helens",
+               "JaxtronomyImageFinder": "jaxtronomy"}.get(type(finder).__name__, "solver")
+
     if max_err > tol:
         warnings.warn(
-            f"helens solver: max image position residual = {max_err:.4f} arcsec "
-            f"(tol={tol}). Consider finer solver grid (smaller pixel_scale_factor)."
+            f"{backend} solver: max image position residual = {max_err:.4f} arcsec "
+            f"(tol={tol}). " + (
+                "Lower solver_params['helens']['pixel_scale_factor'] or raise "
+                "['nsubdivisions']." if backend == "helens" else
+                "Raise solver_params['jaxtronomy']['Nmeas'].")
         )
     else:
-        print(f"helens solver validation passed: max residual = {max_err:.6f} arcsec")
+        print(f"{backend} solver validation passed: "
+              f"max residual = {max_err:.6f} arcsec")
 
     return max_err
 

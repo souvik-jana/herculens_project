@@ -32,6 +32,8 @@ uv run python scripts/...
 | `/gwemfish-pal` | HCL↔PAL conversion rules, PSF/noise/grid, plot conventions |
 | `/gwemfish-infer` | Priors, methods, sample extraction inside infer_batch |
 | `/gwemfish-simulate` | Single-system gwemfish ctx in lens_reconstruction |
+| `/gwemfish-cfg` | Any cfg key: what it controls, default, what breaks if wrong |
+| `/gwemfish-plot` | Posteriors, comparison corners, source-plane plots |
 | `/gwemfish` | One-off systems in lens_reconstruction examples |
 
 **Conversion rule:** use `scripts/pal_utils.py` — do not re-derive. YAML → gwemfish via `scripts/batch_utils.py` `build_cfg()`.

@@ -167,6 +167,59 @@ plot_multi_comparison_corner(
 
 See [reference.md](reference.md) for param groups.
 
+### Make the comparison adapt to whichever methods ran
+
+Do not hard-code the method list — a comparison that assumes three sample sets breaks the moment someone switches one off (nautilus is slow enough that this happens often). Collect results as they run and derive everything from that one list:
+
+```python
+RESULTS = []            # each block appends (method, samples, truths)
+COLORS = {"fisher-source": "steelblue",
+          "deriv-approx-source": "darkorange",
+          "nautilus-source": "seagreen"}
+
+labels      = [m for m, _, _ in RESULTS]
+sample_sets = [s for _, s, _ in RESULTS]
+colors      = [COLORS[m] for m, _, _ in RESULTS]
+
+# only parameters every method that ran actually sampled -- the free-parameter list
+# differs between methods when a prior is fixed for one and not another
+shared = set.intersection(*(set(s) for s in sample_sets))
+
+if len(RESULTS) >= 2:
+    plot_multi_comparison_corner(sample_sets, param_groups, labels=labels,
+                                 colors=colors, truths_dict=truths_dict_nested,
+                                 save_path=".../comparison_{group_name}.png")
+else:
+    print("only one method ran; skipping the comparison corners")
+```
+
+Dropping a method can **widen** the shared parameter set, not just shorten the legend.
+
+### Truths for nautilus
+
+`truths_nautilus` is built as `{k: truth_params[k] for k in param_names if k in truth_params}`, and `y0gw`/`y1gw` are **never** in `truth_params` — they are backfilled only inside the source-plane probmodel builder. Merge the source position in last:
+
+```python
+flat_truths = {}
+for _, _, t in RESULTS:
+    flat_truths.update(t)
+flat_truths["y0gw"] = float(src[0])     # must come after the update loop
+flat_truths["y1gw"] = float(src[1])
+```
+
+### Reading a fisher-vs-sampler comparison
+
+`fisher`/`fisher-source` draw from a Gaussian by construction, so they *will* differ from NUTS and nautilus wherever the posterior is non-Gaussian. That is expected, not a bug. A numeric table alongside the corner makes the size of the difference legible:
+
+```python
+for k in sorted(shared):
+    row = "".join(f"{np.mean(np.asarray(s[k])):13.5g}+-{np.std(np.asarray(s[k])):<11.4g}"
+                  for s in sample_sets)
+    print(f"{k:>14s} {flat_truths.get(k, float('nan')):13.5g}{row}")
+```
+
+If widths come back many times the parameter values, the problem is usually a degenerate Fisher, not the plot — check the `[diag] parameters` line (see `gwemfish-cfg`).
+
 ## Related
 
 `pal-plot` (PAL rendering of arrays, datasets, tracers, fits, and .fits I/O),

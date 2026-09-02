@@ -35,6 +35,9 @@ Thumbs.db
 **/outputs/*
 !**/outputs/*.dvc
 
+# Local lens catalogs
+examples/catalog/
+
 # Large data/binary file types
 *.json
 *.txt
