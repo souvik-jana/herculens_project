@@ -8,7 +8,7 @@ import numpyro.distributions as dist
 import herculens as hcl
 from .data_sim import compute_gw_from_images
 from .config import arcsecond_to_radians, Mpc_to_m, c, SOLVER_PARAMS, e1e2_to_qphi
-from .lens_setup import remove_central_image
+from .lens_setup import image_count_penalty, remove_central_image, solve_and_select
 
 
 # ---------------------------------------------------------------------------
@@ -383,13 +383,11 @@ class ProbModelSourcePlane(hcl.NumpyroModel):
         y1gw  = p['y1gw']()
         betas = jnp.array([y0gw, y1gw])
 
-        result_thetas, result_betas = self.solver.solve(betas, prior_lens, **self.solver_params)
-        (result_theta_x_no_central, result_theta_y_no_central,
-         _, _) = remove_central_image(result_thetas, result_betas,
-                                      lens_center_x, lens_center_y)
-
-        x_pos_array = jnp.array(result_theta_x_no_central)
-        y_pos_array = jnp.array(result_theta_y_no_central)
+        x_pos_array, y_pos_array, _, sel_flags = solve_and_select(
+            self.solver, self.solver_params, betas, prior_lens, self.lens_gw,
+            self.n_images, lens_center_x, lens_center_y)
+        # Reject parameters whose image count does not match the observation.
+        numpyro.factor("image_count", image_count_penalty(sel_flags, self.n_images))
 
         k_mst_kw = p["k_mst"]() if self.use_mst else None
         (_, model_time_delays, _, model_dL_eff,
@@ -545,13 +543,11 @@ class ProbModelSourcePlane_GW_only(hcl.NumpyroModel):
         y1gw  = p['y1gw']()
         betas = jnp.array([y0gw, y1gw])
 
-        result_thetas, result_betas = self.solver.solve(betas, prior_lens, **self.solver_params)
-        (result_theta_x_no_central, result_theta_y_no_central,
-         _, _) = remove_central_image(result_thetas, result_betas,
-                                      lens_center_x, lens_center_y)
-
-        x_pos_array = jnp.array(result_theta_x_no_central)
-        y_pos_array = jnp.array(result_theta_y_no_central)
+        x_pos_array, y_pos_array, _, sel_flags = solve_and_select(
+            self.solver, self.solver_params, betas, prior_lens, self.lens_gw,
+            self.n_images, lens_center_x, lens_center_y)
+        # Reject parameters whose image count does not match the observation.
+        numpyro.factor("image_count", image_count_penalty(sel_flags, self.n_images))
 
         k_mst_kw = p["k_mst"]() if self.use_mst else None
         (_, model_time_delays, _, model_dL_eff,

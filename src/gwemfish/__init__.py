@@ -7,8 +7,14 @@ from .lens_setup import (
     setup_lens,
     setup_helens_solver,
     setup_differentiable_helens_solver,
+    build_lens_solver,
+    normalize_solver_params,
     remove_central_image,
+    select_images,
+    solve_and_select,
 )
+from .image_finders import make_image_finder
+from .diagnostics import diagnose_system
 from .jax_config import setup_jax
 from .data_sim import (
     setup_pixel_grid,
@@ -120,6 +126,12 @@ __all__ = [
     'setup_differentiable_helens_solver',
     'DifferentiableLensEquationSolver',
     'remove_central_image',
+    'select_images',
+    'solve_and_select',
+    'build_lens_solver',
+    'normalize_solver_params',
+    'make_image_finder',
+    'diagnose_system',
     'setup_jax',
     'run_mcmc',
     'run_nautilus',
