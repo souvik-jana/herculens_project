@@ -193,6 +193,21 @@ def _save_pipeline_json(
         return
     import json
 
+    fisher = (ctx or {}).get("fisher") or {}
+    likelihood = (ctx or {}).get("likelihood") or {}
+    # g0/H0 at the truth point are the record of whether the expansion was built
+    # somewhere sensible; without them a saved run cannot be re-checked later.
+    fisher_block = None
+    if fisher:
+        fisher_block = {
+            "keys": likelihood.get("keys_to_include"),
+            "u0": likelihood.get("u0"),
+            "logp0": fisher.get("logp0"),
+            "g0": fisher.get("g0"),
+            "g0_scaled": fisher.get("g0_scaled"),
+            "H0": fisher.get("H0"),
+        }
+
     payload = {
         "injection_parameters": (ctx or {}).get("truth_params"),
         "setup_parameters": {
@@ -204,10 +219,62 @@ def _save_pipeline_json(
         "samples_image_plane": samples_image_plane,
         "truths_image_plane": truths_image_plane,
         "samples_source_plane": source_plane_samples,
+        "fisher": fisher_block,
+        "diagnostics": (ctx or {}).get("diagnostics"),
     }
     _ensure_parent_dir(path)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(_to_serializable(payload), f, indent=2)
+
+
+def _fisher_covariance(FM, keys=None):
+    """Invert the Fisher matrix in a whitened basis, then check it is usable.
+
+    ``u0`` is in raw physical units, so the parameters span many orders of magnitude
+    (dL ~ 3e4 Mpc, T_star ~ 3e7 s, e2 ~ 0.6). A direct ``inv`` on that matrix can have
+    a condition number around 1e20 -- past what float64 can invert -- and returns a
+    covariance with small *negative* eigenvalues, which makes
+    ``multivariate_normal`` produce NaN samples with no error raised.
+
+    Rescaling each row/column by 1/sqrt(|FM_ii|) removes the unit disparity, which is
+    almost all of the ill-conditioning: on catalog system 555 it takes the condition
+    number from 8e19 to 8e12, comfortably invertible. The scaling cancels exactly, so
+    this is the same covariance, just computed without the round-off.
+    """
+    import numpy as _np
+    import jax.numpy as jnp
+
+    FM_np = _np.asarray(FM, dtype=float)
+    diag = _np.abs(_np.diag(FM_np))
+    scale = _np.where(diag > 0, 1.0 / _np.sqrt(_np.where(diag > 0, diag, 1.0)), 1.0)
+
+    FM_scaled = FM_np * scale[:, None] * scale[None, :]
+    try:
+        cov_scaled = _np.linalg.inv(FM_scaled)
+    except _np.linalg.LinAlgError:
+        cov_scaled = _np.linalg.pinv(FM_scaled)
+    cov = cov_scaled * scale[:, None] * scale[None, :]
+    cov = 0.5 * (cov + cov.T)
+
+    eig = _np.linalg.eigvalsh(cov)
+    if eig.min() <= 0:
+        worst = keys[int(_np.argmin(_np.abs(_np.linalg.eigvalsh(FM_np))))] if keys else "?"
+        warnings.warn(
+            f"Fisher covariance is not positive definite (min eigenvalue "
+            f"{eig.min():.3e}); the Fisher matrix is singular to working precision "
+            f"along a near-degenerate direction (weakest parameter: {worst}). This "
+            "usually means the observation does not constrain every free parameter -- "
+            "e.g. a 3-image system gives 2 time delays + 3 dL_eff = 5 observables, so "
+            "5 free parameters leave nothing over. Fix one parameter via cfg['priors'] "
+            "or add EM data. Clipping the non-positive eigenvalues so sampling can "
+            "proceed, but treat the widths along those directions as unbounded.",
+            UserWarning, stacklevel=2,
+        )
+        vals, vecs = _np.linalg.eigh(cov)
+        floor = max(eig.max(), 1.0) * 1e-12
+        cov = (vecs * _np.maximum(vals, floor)) @ vecs.T
+        cov = 0.5 * (cov + cov.T)
+    return jnp.asarray(cov)
 
 
 def make_default_cfg() -> Dict[str, Any]:
@@ -230,10 +297,11 @@ def make_default_cfg() -> Dict[str, Any]:
         DEFAULT_SOURCE_LIGHT_MODEL,
         DEFAULT_LENS_LIGHT_MODEL,
     )
-    from .config import IMAGE_POSITION_SOLVER_DEFAULTS, SOLVER_PARAMS
+    from .config import SOLVER_PARAMS
 
-    # JAXCosmology is not in `config.py`, keep the same defaults used by examples.
-    _gw_solver_params = {**IMAGE_POSITION_SOLVER_DEFAULTS, **SOLVER_PARAMS}
+    # Deep-copied so a caller mutating cfg["gw"]["solver_params"]["helens"][...] cannot
+    # reach back into the module-level defaults and affect every later cfg.
+    _gw_solver_params = copy.deepcopy(SOLVER_PARAMS)
     return {
         "jax": {
             "ncpus": None,  # None => use all available
@@ -315,6 +383,17 @@ def make_default_cfg() -> Dict[str, Any]:
             "rng_key": 123,
             # How the one-shot get_sample() PRNGKey is seeded.
             "prior_sample_rng_key": 123,
+            # Pre-inference checks at the truth point: image positions, observables,
+            # source-box vs caustic, gradient. "raise" | "warn" | "off".
+            # "off" is unsafe for the *-source methods: their Fisher expansion is
+            # built at truth, so a broken solve there corrupts everything downstream
+            # with nothing to signal it.
+            "diagnostics": "warn",
+            # Per-check thresholds; anything omitted keeps gwemfish's default.
+            # See gwemfish.diagnostics.DEFAULT_THRESHOLDS for the values and how they
+            # were calibrated. Keys: position_tol (arcsec), observable_rtol,
+            # condition_limit, gradient_sigma.
+            "diagnostics_thresholds": {},
         },
         "plot": {
             "plot_mode": "groupwise",  # groupwise | combined | subset
@@ -1061,6 +1140,7 @@ def setup_gw_observation(ctx: Dict[str, Any], cfg: Optional[Dict[str, Any]] = No
             zl=lens_cfg["zl"],
             zs=lens_cfg["zs"],
             lens_model_list=ctx.get("lens_model_list", lens_cfg["lens_model_list"]),
+            solver_params=gw_cfg.get("solver_params"),
         )
 
     dL_true = cosmology.luminosity_distance(lens_cfg["zs"])
@@ -1518,7 +1598,7 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
     import numpyro.distributions as dist
 
     from .prob_model import ProbModelSourcePlane, ProbModelSourcePlane_GW_only
-    from .lens_setup import setup_differentiable_helens_solver
+    from .lens_setup import build_lens_solver
 
     priors_user = cfg_full.get("priors", {})
     priors_user_norm = _normalize_priors_overrides(
@@ -1566,7 +1646,18 @@ def _build_inference_probmodel_source_plane(ctx, mode, cfg_full):
         from .data_sim import setup_pixel_grid
         pg_kwargs = cfg_full.get("em", {}).get("pixel_grid_kwargs", {})
         pixel_grid = setup_pixel_grid(**pg_kwargs)
-    solver, _, solver_params = setup_differentiable_helens_solver(pixel_grid, ctx["lens_gw"])
+    lens_cfg = cfg_full["lens"]
+    kwargs_lens_ctx = ctx.get("kwargs_lens") or lens_cfg["kwargs_lens"]
+    lens_center = (float(kwargs_lens_ctx[0].get("center_x", 0.0)),
+                   float(kwargs_lens_ctx[0].get("center_y", 0.0)))
+    solver, solver_params, solver_resolved = build_lens_solver(
+        ctx.get("lens_model_list", lens_cfg["lens_model_list"]),
+        lens_cfg["zl"], lens_cfg["zs"], ctx["lens_gw"],
+        solver_params=cfg_full["gw"].get("solver_params"),
+        n_images=n_images, pixel_grid=pixel_grid, polish=True,
+        lens_center=lens_center,
+    )
+    ctx["solver_resolved"] = solver_resolved
 
     use_layout = bool(cfg_full.get("use_parameter_layout", False))
     entries = None
@@ -1818,6 +1909,7 @@ def run_inference(
     )
     from .inference import run_mcmc, run_mcmc_informed
     from .fisher import compute_fisher
+    from .diagnostics import diagnose_system
 
     # Prefer the simulation/setup configuration already attached to `ctx`.
     # This keeps EM/GW setup choices and derived truth generation consistent
@@ -1999,6 +2091,25 @@ def run_inference(
             print(f"Hessian diagonal H[{key},{key}] is inf")
         elif hi == 0:
             print(f"Hessian diagonal H[{key},{key}] is zero")
+
+    # Scaled gradient: g0 / sqrt(|H_ii|), i.e. how many 1-sigma steps each parameter
+    # sits from the peak. The raw gradient is not comparable across parameters
+    # because u0 is unscaled (y1gw ~ 1e-6 alongside theta_E ~ 2).
+    g0_scaled = g0 / jnp.sqrt(jnp.abs(h_diag))
+    ctx['fisher']['g0_scaled'] = g0_scaled
+    print("Scaled gradient at truth (g0 / sqrt|diag H0|):")
+    for key, gs in zip(keys_to_include, g0_scaled):
+        print(f"  {key:24s} {float(gs): .4e}")
+
+    diag_level = cfg_full["inference"].get("diagnostics", "warn")
+    diagnostics_report = diagnose_system(
+        ctx, cfg_full, method_norm, mode,
+        solver=getattr(probmodel, "solver", None),
+        solver_params=getattr(probmodel, "solver_params", None),
+        g0=g0, H0=H0, keys=keys_to_include, level=diag_level,
+    )
+    ctx["diagnostics"] = diagnostics_report
+
     truths_dict = {k: float(input_params[k]) for k in keys_all}
 
     # Fisher-only: sample from Gaussian N(u0, cov)
@@ -2006,10 +2117,7 @@ def run_inference(
 
     if method_norm in ("fisher", "fisher-source"):
         FM = -H0
-        try:
-            cov = jnp.linalg.inv(FM)
-        except Exception:
-            cov = jnp.linalg.pinv(FM)
+        cov = _fisher_covariance(FM, keys_to_include)
 
         key = jax.random.PRNGKey(int(setup_seed))
         n_fisher_samples = int(cfg_full["inference"]["n_fisher_samples"])

@@ -16,7 +16,7 @@ import herculens as hcl
 
 from .config import SOLVER_PARAMS
 from .data_sim import compute_gw_from_images
-from .lens_setup import remove_central_image
+from .lens_setup import image_count_penalty, remove_central_image, solve_and_select
 from .parameter_layout import ParamEntry, flat_keys, unpack_to_kwargs
 from .priors import DEFAULT_IMAGE_POSITION_PRIORS_EM, DEFAULT_IMAGE_POSITION_PRIORS_GW
 from .prob_model import _sample_image_positions
@@ -442,13 +442,11 @@ class FlexProbModelSourcePlaneGWOnly(hcl.NumpyroModel):
         lens_center_y = kl[0].get("center_y", 0.0)
         betas = jnp.array([flat["y0gw"], flat["y1gw"]])
 
-        result_thetas, result_betas = self.solver.solve(betas, kl, **self.solver_params)
-        (result_theta_x_no_central, result_theta_y_no_central,
-         _, _) = remove_central_image(result_thetas, result_betas,
-                                      lens_center_x, lens_center_y)
-
-        x_pos_array = jnp.array(result_theta_x_no_central)
-        y_pos_array = jnp.array(result_theta_y_no_central)
+        x_pos_array, y_pos_array, _, sel_flags = solve_and_select(
+            self.solver, self.solver_params, betas, kl, self.lens_gw,
+            self.n_images, lens_center_x, lens_center_y)
+        # Reject parameters whose image count does not match the observation.
+        numpyro.factor("image_count", image_count_penalty(sel_flags, self.n_images))
 
         T_star, dL = flat["T_star"], flat["dL"]
         k_mst_kw = p["k_mst"]() if self.use_mst else None
@@ -576,13 +574,11 @@ class FlexProbModelSourcePlaneEMGW(hcl.NumpyroModel):
         lens_center_y = kl[0].get("center_y", 0.0)
         betas = jnp.array([flat["y0gw"], flat["y1gw"]])
 
-        result_thetas, result_betas = self.solver.solve(betas, kl, **self.solver_params)
-        (result_theta_x_no_central, result_theta_y_no_central,
-         _, _) = remove_central_image(result_thetas, result_betas,
-                                      lens_center_x, lens_center_y)
-
-        x_pos_array = jnp.array(result_theta_x_no_central)
-        y_pos_array = jnp.array(result_theta_y_no_central)
+        x_pos_array, y_pos_array, _, sel_flags = solve_and_select(
+            self.solver, self.solver_params, betas, kl, self.lens_gw,
+            self.n_images, lens_center_x, lens_center_y)
+        # Reject parameters whose image count does not match the observation.
+        numpyro.factor("image_count", image_count_penalty(sel_flags, self.n_images))
 
         T_star, dL = flat["T_star"], flat["dL"]
         (_, model_time_delays, _, model_dL_eff,

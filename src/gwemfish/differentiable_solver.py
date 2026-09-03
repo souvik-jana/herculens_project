@@ -1,23 +1,20 @@
 """
-Differentiable wrapper around helens' LensEquationSolver.
+Differentiable wrapper around any image finder.
 
-helens.solver.LensEquationSolver.solve() performs a discrete adaptive
-triangle search. Autodiff through it returns exact-zero gradients (the
-selection ops -- jnp.sign, jnp.where, boolean indexing -- are piecewise
-constant), even though the true dependence of image position on lens
-parameters is smooth away from caustics. This breaks any numpyro likelihood
-that calls .solve() inside model() and is then differentiated by
-jax.grad/jax.hessian (exactly what compute_fisher does for deriv-approx).
-Confirmed catastrophic in helens/investigations/inv3_fisher_vs_nautilus
-(raw solver -> Fisher covariance is NaN).
+An image finder (see image_finders.py) locates images but carries no usable
+derivative: helens' triangle search selects with jnp.sign / jnp.where / boolean
+indexing, all piecewise constant, so autodiff returns exact zeros; jaxtronomy runs
+in numpy behind jax.pure_callback, which autodiff cannot see into at all. Either
+way, differentiating a model that calls .solve() gives a zero gradient and hence a
+singular Hessian -- NaN Fisher covariance, with nothing raised to warn you.
+Confirmed in helens/investigations/inv3_fisher_vs_nautilus.
 
 Fix (implicit function theorem / Newton-with-custom_root), prototyped and
 validated in helens/investigations/inv2_solver_math/differentiable_solver.py
 and analytic_jacobian_check.py:
 
-  1. Use helens' adaptive search as a NON-DIFFERENTIABLE coarse localizer
-     only (wrapped in jax.lax.stop_gradient) to get an initial guess theta0
-     per image slot.
+  1. Run the finder as a NON-DIFFERENTIABLE locator (wrapped in
+     jax.lax.stop_gradient) to get an initial guess theta0 per image slot.
   2. Polish each theta0 with a fixed number of Newton-Raphson steps on the
      smooth residual r(theta) = beta - (theta - alpha(theta)), using
      jax.lax.custom_root, which implements the implicit function theorem:
@@ -25,6 +22,16 @@ and analytic_jacobian_check.py:
      where J_r = -dr/dtheta = I - d(alpha)/d(theta). custom_root
      differentiates only through this implicit formula; the Newton loop
      itself never needs to be autodiff-friendly.
+
+The polish therefore does two separate jobs, and which ones matter depends on the
+finder:
+
+  accuracy       helens' positions are only as good as its final triangle
+                 (~0.05 arcsec), so Newton is what makes them exact. jaxtronomy's
+                 analytical solver is already exact, and Newton converges in
+                 essentially one step -- a no-op numerically.
+  derivatives    needed for BOTH finders, always. This is the job that cannot be
+                 skipped for any gradient-based method.
 
 Validated (away from caustics): matches finite differences to ~1.3e-9
 relative error, and an independent closed-form IFT Jacobian (never touching
@@ -34,8 +41,6 @@ custom_root/Newton) to ~2.4e-15 median / 1.8e-13 worst-case across 84
 
 import jax
 import jax.numpy as jnp
-
-from helens import LensEquationSolver as LensEquationSolver_helens
 
 
 def residual(theta, beta, kwargs_lens, ray_shooting_func):
@@ -77,57 +82,74 @@ def polish_image(theta_guess, beta, kwargs_lens, ray_shooting_func, n_newton=8):
 
 class DifferentiableLensEquationSolver:
     """Drop-in replacement for helens.LensEquationSolver: same
-    .solve(beta, kwargs_lens, nsolutions=..., niter=..., scale_factor=...,
-    nsubdivisions=...) signature and same (theta, beta) return shape (N, 2)
-    each, so it can be passed anywhere a raw solver is currently passed
-    (e.g. ProbModelSourcePlane*'s `solver=` argument) with no other code
-    changes -- but with correct gradients.
+    .solve(beta, kwargs_lens, nsolutions=..., ...) signature and same
+    (theta, beta) return shape (N, 2) each, so it can be passed anywhere a raw
+    solver is currently passed (e.g. ProbModelSourcePlane*'s `solver=` argument)
+    with no other code changes -- but with correct gradients.
+
+    Takes an image finder rather than constructing one, so the same wrapper serves
+    helens and jaxtronomy alike. Set ``polish=False`` only where derivatives are
+    genuinely not needed (nautilus-source); every gradient-based method requires
+    the polish and will silently produce a NaN covariance without it.
     """
 
-    def __init__(self, grid_x, grid_y, ray_shooting_func, n_newton=8):
-        self._coarse_solver = LensEquationSolver_helens(grid_x, grid_y, ray_shooting_func)
-        self._ray_shooting_func = ray_shooting_func
-        self._n_newton = n_newton
-        self._polish_batched = jax.vmap(self._polish_one, in_axes=(0, None, None))
+    def __init__(self, finder, lens_center=(0.0, 0.0), n_newton=8, polish=True,
+                 duplicate_tol=None):
+        if polish and n_newton < 1:
+            raise ValueError(
+                "n_newton must be >= 1: it is a step count, not an on/off switch, and "
+                "zero steps silently reproduces the zero-gradient / NaN-covariance bug. "
+                "To skip polishing on nautilus-source (the only method that can), set "
+                "cfg['nautilus']['polish'] = False."
+            )
+        self.finder = finder
+        self.ray_shooting_func = finder.ray_shooting_func
+        self.lens_center = lens_center
+        self.n_newton = n_newton
+        self.polish = polish
+        # Carried here so select_images callers do not each need it threaded through
+        # their constructor; resolved once in build_lens_solver.
+        self.duplicate_tol = duplicate_tol
+        self.polish_batched = jax.vmap(self.polish_one, in_axes=(0, None, None))
+        # Set by the most recent solve(); read by the diagnostic.
+        self.last_n_found = None
 
-    def _polish_one(self, theta_guess, beta, kwargs_lens):
+    def polish_one(self, theta_guess, beta, kwargs_lens):
         return polish_image(
-            theta_guess, beta, kwargs_lens, self._ray_shooting_func,
-            n_newton=self._n_newton)
+            theta_guess, beta, kwargs_lens, self.ray_shooting_func,
+            n_newton=self.n_newton)
 
-    def solve(self, beta, kwargs_lens, nsolutions=5, niter=8, scale_factor=2,
-              nsubdivisions=1):
-        """Coarse-localize (non-differentiable, stop-gradiented) + Newton-polish
+    def solve(self, beta, kwargs_lens, nsolutions=5, **finder_kwargs):
+        """Locate (non-differentiable, stop-gradiented) then Newton-polish
         (differentiable).
 
-        helens' coarse search always returns exactly `nsolutions` slots, even
-        when fewer real images exist (e.g. a 4-image quad with `nsolutions=5`
-        has no 5th/central image at all). The unused slot is a non-converged
-        placeholder that lands at/near the lens center (its bracketing
-        triangle contains the origin without actually bracketing a root) --
-        this is also the coordinate where many mass profiles (EPL, SIS, ...)
-        have a genuine singularity in the deflection Jacobian. Newton-polishing
-        that placeholder is therefore both meaningless (there is no root to
-        refine) and dangerous: the first step solves a near-singular/large-
-        residual linear system and can converge onto a *different* real image
-        instead of staying near zero, duplicating it and breaking
-        remove_central_image's "drop the image nearest the lens center"
-        selection (confirmed for an EPL+shear quad: the raw solver's slot 4
-        stays at ~(5e-13, 5e-13), but naive polishing walked it to
-        essentially the same position as image 1). Keep any slot whose coarse
-        guess is at/near the lens-plane origin frozen at its stop-gradiented
-        coarse value (mirrors the raw solver's own padding convention and
-        remains discardable by remove_central_image the same way); only
-        slots with a genuine non-origin coarse guess get Newton-polished.
+        A finder can return fewer real images than there are slots; the unused ones
+        sit at/near the lens centre, which for EPL-like profiles is a genuine
+        singularity in the deflection Jacobian. Newton-polishing such a slot is both
+        meaningless (there is no root to refine) and dangerous: the first step solves
+        a near-singular system and can walk the slot onto a *different* real image,
+        duplicating it (confirmed for an EPL+shear quad: the raw slot stays at
+        ~(5e-13, 5e-13), naive polishing moved it onto image 1). So padding slots are
+        frozen at their stop-gradiented value and only genuine guesses get polished;
+        select_images then tells padding, duplicates and central images apart.
         """
         beta_sg = jax.lax.stop_gradient(beta)
         kwargs_lens_sg = jax.tree_util.tree_map(jax.lax.stop_gradient, kwargs_lens)
-        theta0_all, beta0_all = self._coarse_solver.solve(
-            beta_sg, kwargs_lens_sg, nsolutions=nsolutions, niter=niter,
-            scale_factor=scale_factor, nsubdivisions=nsubdivisions)
+        theta0_all, n_found = self.finder.find(
+            beta_sg, kwargs_lens_sg, nsolutions, **finder_kwargs)
         theta0_all = jax.lax.stop_gradient(theta0_all)
-        theta_polished = self._polish_batched(theta0_all, beta, kwargs_lens)
+        self.last_n_found = n_found
 
-        is_padding_slot = jnp.hypot(theta0_all[:, 0], theta0_all[:, 1]) < 1e-8
+        cx, cy = self.lens_center
+        is_padding_slot = jnp.hypot(theta0_all[:, 0] - cx, theta0_all[:, 1] - cy) < 1e-8
+
+        if not self.polish:
+            return theta0_all, jnp.broadcast_to(beta, (nsolutions, 2))
+
+        # Nudge padding slots off the singularity before polishing so the vmapped
+        # Newton solve cannot produce NaN; their polished values are discarded below.
+        theta0_for_polish = jnp.where(is_padding_slot[:, None],
+                                      theta0_all + 1e-6, theta0_all)
+        theta_polished = self.polish_batched(theta0_for_polish, beta, kwargs_lens)
         theta_final = jnp.where(is_padding_slot[:, None], theta0_all, theta_polished)
-        return theta_final, beta0_all
+        return theta_final, jnp.broadcast_to(beta, (nsolutions, 2))

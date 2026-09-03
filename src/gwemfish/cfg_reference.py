@@ -91,11 +91,19 @@ import numpyro.distributions as dist
 #           'nautilus-image'         -- Nested sampling, image-plane GW (image_x*/image_y*). All modes.
 #
 # The '-source' family (fisher-source/deriv-approx-source/hmc-source/hmc-informed-source) and
-# 'nautilus-source' are conceptually related (both sample y0gw/y1gw) but dispatch through completely
-# different code paths: the '-source' family goes through _build_inference_probmodel_source_plane
-# (differentiable helens solver, full NUTS/Taylor machinery); nautilus-source goes through
-# nautilus_source_inference (scipy-prior nested sampling, no gradients, its own helens/jaxtronomy
-# solver backend choice).
+# 'nautilus-source' both sample y0gw/y1gw and both solve the lens equation inside the
+# likelihood. They still dispatch through different code paths -- the '-source' family via
+# _build_inference_probmodel_source_plane (full NUTS/Taylor machinery), nautilus-source via
+# nautilus_source_inference (scipy-prior nested sampling, no gradients) -- but they now build
+# the SAME solver from the same cfg["gw"]["solver_params"], so they no longer disagree about
+# where the images are.
+#
+# The image finder is chosen by solver_params["backend"] ('helens' triangle search or
+# jaxtronomy's closed-form/grid solver); it is not fixed to helens. Differentiability does not
+# come from the finder at all -- the finder's output is stop_gradient-ed, and a Newton polish
+# with jax.lax.custom_root re-attaches derivatives via the implicit function theorem. That is
+# why the finder is swappable and why nautilus-source, which needs no derivatives, may skip
+# the polish (cfg["nautilus"]["polish"]) while the four gradient-based methods may not.
 # ---------------------------------------------------------------------------
 
 
@@ -214,16 +222,74 @@ COMPLETE_CFG = {
                                       # image solving / time delays; also becomes truth y0gw/y1gw
                                       # for the '-source' methods (see below).
         "cosmology": {"H0": 67.3, "Om0": 0.316},  # dict -> JAXCosmology(**cosmology). Flat LCDM only.
-        # Merges IMAGE_POSITION_SOLVER_DEFAULTS (jaxtronomy image-position solver: 'solver',
-        # 'min_distance', 'search_window', 'precision_limit', 'num_iter_max',
-        # 'arrival_time_sort') with SOLVER_PARAMS (Helens differentiable solver: 'nsolutions',
-        # 'niter', 'scale_factor', 'nsubdivisions'). Both solvers are used somewhere in the
-        # pipeline (image positions at setup time vs. the differentiable solver for '-source'
-        # methods), so both key sets can coexist here; each solver ignores keys it doesn't use.
+        # Lens-equation solver settings, nested by image-finder backend. Shared keys apply
+        # whichever backend runs; each backend's own knobs live under its name, so settings
+        # for the backend you are NOT using are carried along rather than silently dropped
+        # and you can flip 'backend' without re-editing anything.
+        #
+        # These reach the solver used *during inference* for every '-source' method
+        # (fisher-source, deriv-approx-source, hmc-source, hmc-informed-source and
+        # nautilus-source) as well as the setup-time truth solve. The image-plane methods
+        # (fisher, deriv-approx, hmc, hmc-informed, nautilus-image) use no solver at all --
+        # they sample image_x{i}/image_y{i} directly -- so these have no effect there.
+        #
+        # A legacy flat dict is still accepted: each key is routed into its nest with a
+        # DeprecationWarning naming the new location.
         "solver_params": {
-            "solver": "lenstronomy", "min_distance": 0.01, "search_window": 15,
-            "precision_limit": 1e-10, "num_iter_max": 1200, "arrival_time_sort": True,
-            "nsolutions": 5, "niter": 8, "scale_factor": 2, "nsubdivisions": 5,
+            # --- shared ---
+            "backend": "auto",     # "auto" | "helens" | "jaxtronomy". 'auto' picks jaxtronomy's
+                                   # closed-form solver when lens_model_list supports it (one of
+                                   # EPL/EPL_NUMBA/SIE/SIS plus optional SHEAR/CONVERGENCE),
+                                   # else helens' triangle search.
+            "nsolutions": "auto",  # int or "auto" -> n_images + 1. Exactly one spare slot: it
+                                   # holds the central image when the profile has one (gamma < 2)
+                                   # and stays padding when it does not (gamma >= 2 is singular
+                                   # at the centre). Doubles get 3, triples 4, quads 5.
+            "n_newton": 8,         # int >= 1. Newton-polish steps -- a step count, NOT an on/off
+                                   # switch. The polish supplies the derivatives every
+                                   # gradient-based method needs, so 0 raises. To skip polishing
+                                   # on nautilus-source (the only method that can), use
+                                   # cfg['nautilus']['polish'].
+            "duplicate_tol": None, # float arcsec or None. Separation below which two solutions
+                                   # are the same image. None -> 1e-6 when polished (positions
+                                   # are good to ~1e-9), else half the solver-grid pixel scale.
+
+            # --- helens: any lens model; positions accurate to ~the final triangle ---
+            "helens": {
+                "niter": 8,               # refinement iterations
+                "scale_factor": 2,        # per-iteration triangle shrink
+                "nsubdivisions": 5,       # initial subdivisions -- raise this FIRST when an
+                                          # image is missed
+                "pixel_scale_factor": 0.8,  # search-grid coarseness vs the image grid; lower is
+                                            # finer and slower
+            },
+
+            # --- jaxtronomy: 'analytical' is closed-form (exact), 'lenstronomy' is grid + Newton ---
+            "jaxtronomy": {
+                "solver": "analytical",      # "analytical" | "lenstronomy"
+                # analytical only
+                "magnification_limit": 1e-4, # drops roots fainter than this. Measured for
+                                             # EPL+SHEAR, theta_E=2: gamma>=2 has no central
+                                             # image at all; gamma=1.7-1.9 produce a degenerate
+                                             # 5th root at |mu|=0 (junk, correctly dropped);
+                                             # gamma=1.5 has a REAL central image at |mu|~1.4e-3,
+                                             # which 1e-4 keeps and jaxtronomy's suggested 1e-1
+                                             # would silently discard.
+                                             # NOTE this setting defines what counts as an image
+                                             # for the simulation as well as the inference -- both
+                                             # go through the same solver -- so lowering it can
+                                             # raise n_images. That is intentional: the two sides
+                                             # stay consistent by construction.
+                "Nmeas": 400,                # angular sampling of the 1-D root solve
+                "Nmeas_extra": 80,           # extra sampling at the low-shear end
+                # lenstronomy only
+                "min_distance": 0.01,
+                "search_window": 15,
+                "precision_limit": 1e-10,
+                "num_iter_max": 1200,
+                # both
+                "arrival_time_sort": True,
+            },
         },
         # GW likelihood scale factors (ProbModel* / FlexProbModel*, image-plane methods: fisher,
         # deriv-approx, hmc, hmc-informed, nautilus-image; source-plane methods read the same dict
@@ -368,6 +434,32 @@ COMPLETE_CFG = {
                                    # reused for all of them inside run_inference).
         "prior_sample_rng_key": 123,  # int. Seeds the one-shot probmodel.get_sample() call used to
                                       # discover keys_to_include (the free-parameter name list).
+        # Pre-inference checks at the TRUE parameters, before any sampling:
+        #   1 images       solver reproduces the simulated positions, no duplicate/spurious central
+        #   2 observables  time delays / magnifications / dL_eff match the simulation
+        #   3 source box   y0gw/y1gw prior box fits inside the caustic (advisory: a box that pokes
+        #                  out guarantees NUTS divergences, since the image-count penalty is a
+        #                  cliff with no gradient to push back against)
+        #   4 gradient     g0/sqrt|diag H0| ~ 0, i.e. truth really is at the peak
+        # Checks 1-3 need a solver, so they are skipped for image-plane methods and EM-only;
+        # check 4 needs a Fisher expansion, so it is skipped for the nautilus methods.
+        # Per-check thresholds. Override any subset; omitted keys keep the default.
+        # Defaults live in gwemfish.diagnostics.DEFAULT_THRESHOLDS and were calibrated
+        # on real systems rather than chosen: e.g. condition_limit 1e10 sits between a
+        # 3-image system with 4 free parameters (cond 5.2e8, widths sigma/truth
+        # 0.23-1.14, usable) and the same system with 5 free (cond 9.0e12, widths
+        # 14-32x the parameter values). Raise a threshold when a system you trust
+        # trips a check for a reason you understand.
+        "diagnostics_thresholds": {
+            # "position_tol": 1e-4,     # arcsec, check 1: solved vs simulated images
+            # "observable_rtol": 1e-3,  # check 2: time delays / dL_eff
+            # "condition_limit": 1e10,  # check 4: scaled Fisher condition number
+            # "gradient_sigma": 0.5,    # check 5: |g0|/sqrt|diag H0|
+        },
+        "diagnostics": "warn",  # "warn" (default) | "raise" | "off".
+                                # "off" is unsafe for the '-source' family: their expansion is
+                                # built AT truth, so a bad solve there corrupts everything
+                                # downstream with nothing to signal it.
         # bool. method='hmc-informed'/'hmc-informed-source' only (passed to run_mcmc_informed).
         # NOT present in make_default_cfg()'s returned dict -- read via
         # cfg["inference"].get("regularize", False). If True, eigendecomposes the Fisher mass
@@ -531,15 +623,26 @@ COMPLETE_CFG = {
         # The following two are consumed directly by nautilus_source_inference /
         # nautilus_image_inference (NOT forwarded to nautilus.Sampler or sampler.run at all --
         # simple_pipeline._finish_nautilus_run explicitly skips them via its `_skip` set):
-        "solver_backend": "helens",       # "helens" | "jaxtronomy". Which lens-equation solver
-                                           # nautilus-source uses to go from y0gw/y1gw to image
-                                           # positions for the GW loglikelihood. 'jaxtronomy' is
-                                           # typically faster; 'helens' matches the differentiable
-                                           # solver used by the '-source' NUTS family exactly.
-        "solver_validation_tol": 0.05,  # float, arcsec. At problem-build time, the chosen solver
-                                        # is validated against ctx's truth image positions; a
-                                        # residual above this tolerance emits a UserWarning
-                                        # (does not raise) suggesting finer solver grid settings.
+        # Newton polish on/off -- nautilus-source ONLY, and the only method where it is a
+        # choice. Nested sampling needs no derivatives, so skipping the polish here costs
+        # accuracy rather than correctness; every gradient-based method requires it and
+        # never reads this key.
+        "polish": "auto",   # "auto" | True | False.
+                            # "auto" polishes only when it changes the answer: skipped for the
+                            # jaxtronomy finders (positions already exact/converged) and applied
+                            # for helens (~0.05 arcsec -> ~1e-6). With the default
+                            # backend='auto' on EPL+SHEAR this means nautilus-source is both
+                            # faster and more accurate than the historical raw-helens path.
+                            # False reproduces that historical path exactly, at its cost.
+        "solver_backend": "helens",  # DEPRECATED alias of solver_params['backend'], which
+                                     # applies to every method rather than nautilus alone.
+                                     # Still honoured; emits a DeprecationWarning.
+        "solver_validation_tol": 0.05,  # float, arcsec. At problem-build time the solver is
+                                        # validated against ctx's truth image positions; a
+                                        # residual above this emits a UserWarning. Note the
+                                        # image-COUNT check now raises: it compares distinct
+                                        # images found, not len(x_pos), which was a
+                                        # compile-time constant and could never fire.
     },
 }
 

@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 import scipy.stats as sps
 
-from .lens_setup import setup_helens_solver, remove_central_image
+from .lens_setup import build_lens_solver, solve_and_select
 from .data_sim import compute_gw_from_images
 from .priors import DEFAULT_PRIORS_GW_SOURCE_PLANE
 from .nautilus_common import (
@@ -95,40 +95,49 @@ def _gw_extra_defaults(bounds, keys):
 
 
 def _solve_images(solver, solver_params, y0, y1, kwargs_lens,
-                  lens_center_x, lens_center_y, n_images):
-    thetas, betas = solver.solve(
-        jnp.array([y0, y1]), kwargs_lens, **solver_params
+                  lens_center_x, lens_center_y, n_images, lens_gw=None):
+    """Solve at one sampled point, rejecting configurations with the wrong image count.
+
+    The count comes from ``select_images``' ``n_distinct``, not from ``len(x_pos)``:
+    the returned array is always ``n_images`` long by construction, so a length test
+    is a compile-time constant and can never fire. That is why the old check missed
+    padded/duplicated helens solutions entirely.
+    """
+    x_pos, y_pos, _, flags = solve_and_select(
+        solver, solver_params, jnp.array([y0, y1]), kwargs_lens, lens_gw,
+        n_images, lens_center_x, lens_center_y,
     )
-    x_pos, y_pos, _, _ = remove_central_image(
-        thetas, betas, lens_center_x, lens_center_y
-    )
-    if len(x_pos) != n_images:
+    if int(flags["n_distinct"]) != n_images:
         return None, None
     return list(x_pos), list(y_pos)
-
-
-def _solve_images_jaxtronomy(jax_solver, y0, y1, kwargs_lens,
-                              lens_center_x, lens_center_y, n_images):
-    kwargs_float = [{k: float(v) for k, v in kw.items()} for kw in kwargs_lens]
-    x_img, y_img = jax_solver.image_position_from_source(float(y0), float(y1), kwargs_float)
-    if len(x_img) != n_images:
-        return None, None
-    return list(x_img), list(y_img)
 
 
 def validate_helens_solver(solver, solver_params, kwargs_lens_truth,
                             y_truth, x_images_truth, y_images_truth,
                             lens_center_x=0.0, lens_center_y=0.0,
-                            tol=0.05):
-    n_images = len(x_images_truth)
-    thetas, betas = solver.solve(jnp.array(y_truth), kwargs_lens_truth, **solver_params)
-    x_sol, y_sol, _, _ = remove_central_image(thetas, betas, lens_center_x, lens_center_y)
+                            tol=0.05, lens_gw=None):
+    """Check the solver reproduces the simulated images at the true parameters.
 
-    if len(x_sol) != n_images:
+    Counts *distinct* images rather than the length of the returned array: the
+    array is always ``n_images`` long by construction, so the old length test was a
+    compile-time constant that could never fail, and padded or duplicated solutions
+    sailed through it.
+    """
+    n_images = len(x_images_truth)
+    x_sol, y_sol, _, flags = solve_and_select(
+        solver, solver_params, jnp.array(y_truth), kwargs_lens_truth, lens_gw,
+        n_images, lens_center_x, lens_center_y,
+    )
+
+    n_distinct = int(flags["n_distinct"])
+    if n_distinct != n_images:
         raise RuntimeError(
-            f"helens solver returned {len(x_sol)} images for truth source, "
-            f"expected {n_images}. Adjust solver_params (nsolutions, niter) "
-            "or pixel_scale_factor in setup_helens_solver."
+            f"Solver found {n_distinct} distinct images at the true parameters, "
+            f"expected {n_images} (padding={int(flags['n_padding'])}, "
+            f"duplicates={int(flags['n_duplicate'])}, "
+            f"central={bool(flags['has_central'])}). "
+            "Raise solver_params['helens']['nsubdivisions'] or ['nsolutions'], or "
+            "switch cfg['gw']['solver_params']['backend'] to 'jaxtronomy'."
         )
 
     x_sorted = np.sort(np.array(x_sol))
@@ -139,15 +148,89 @@ def validate_helens_solver(solver, solver_params, kwargs_lens_truth,
         np.concatenate([x_sorted - x_truth_s, y_sorted - y_truth_s])
     )))
 
+    # Name the finder actually in use: this path is no longer helens-only.
+    finder = getattr(solver, "finder", None)
+    backend = {"HelensImageFinder": "helens",
+               "JaxtronomyImageFinder": "jaxtronomy"}.get(type(finder).__name__, "solver")
+
     if max_err > tol:
         warnings.warn(
-            f"helens solver: max image position residual = {max_err:.4f} arcsec "
-            f"(tol={tol}). Consider finer solver grid (smaller pixel_scale_factor)."
+            f"{backend} solver: max image position residual = {max_err:.4f} arcsec "
+            f"(tol={tol}). " + (
+                "Lower solver_params['helens']['pixel_scale_factor'] or raise "
+                "['nsubdivisions']." if backend == "helens" else
+                "Raise solver_params['jaxtronomy']['Nmeas'].")
         )
     else:
-        print(f"helens solver validation passed: max residual = {max_err:.6f} arcsec")
+        print(f"{backend} solver validation passed: "
+              f"max residual = {max_err:.6f} arcsec")
 
     return max_err
+
+
+def build_nautilus_solver(ctx, cfg_full, n_images):
+    """Build the solver for a nautilus-source run, honouring cfg solver settings.
+
+    Same construction path as the gradient-based source-plane methods, so a
+    nautilus-source run and an hmc-source run on one cfg use identically-configured
+    solvers rather than silently differing in accuracy.
+
+    Nested sampling needs no derivatives, so the Newton polish is optional here --
+    and it is the only method where it is. ``cfg["nautilus"]["polish"]``:
+
+      "auto" (default)  polish only when it changes the answer: skipped for the
+                        jaxtronomy finders, whose positions are already exact or
+                        converged, and applied for helens, whose triangle search is
+                        only good to ~0.05 arcsec.
+      True / False      force it on or off. False reproduces the historical raw-helens
+                        path exactly, at the same cost.
+    """
+    nautilus_cfg = cfg_full.get("nautilus", {})
+    lens_cfg = cfg_full["lens"]
+    solver_params_cfg = dict(cfg_full.get("gw", {}).get("solver_params") or {})
+
+    # Deprecated alias: cfg["nautilus"]["solver_backend"] predates the shared
+    # solver_params["backend"] and means the same thing.
+    legacy_backend = nautilus_cfg.get("solver_backend")
+    if legacy_backend is not None and "backend" not in solver_params_cfg:
+        warnings.warn(
+            "cfg['nautilus']['solver_backend'] is deprecated; use "
+            "cfg['gw']['solver_params']['backend'], which applies to every method.",
+            DeprecationWarning, stacklevel=2,
+        )
+        solver_params_cfg["backend"] = legacy_backend
+
+    pixel_grid = ctx.get("pixel_grid")
+    if pixel_grid is None:
+        from .data_sim import setup_pixel_grid
+        pg_kwargs = cfg_full.get("em", {}).get("pixel_grid_kwargs", {})
+        pixel_grid = setup_pixel_grid(**pg_kwargs)
+        print("  pixel_grid not in ctx (EM disabled) — created from cfg pixel_grid_kwargs.")
+
+    kwargs_lens_ctx = ctx.get("kwargs_lens") or lens_cfg["kwargs_lens"]
+    lens_center = (float(kwargs_lens_ctx[0].get("center_x", 0.0)),
+                   float(kwargs_lens_ctx[0].get("center_y", 0.0)))
+
+    polish_cfg = nautilus_cfg.get("polish", "auto")
+    if polish_cfg == "auto":
+        from .image_finders import resolve_backend
+        resolved = resolve_backend(
+            solver_params_cfg.get("backend", "auto"),
+            ctx.get("lens_model_list", lens_cfg["lens_model_list"]),
+        )
+        polish = resolved == "helens"
+    else:
+        polish = bool(polish_cfg)
+
+    solver, solver_params, resolved = build_lens_solver(
+        ctx.get("lens_model_list", lens_cfg["lens_model_list"]),
+        lens_cfg["zl"], lens_cfg["zs"], ctx["lens_gw"],
+        solver_params=solver_params_cfg, n_images=n_images,
+        pixel_grid=pixel_grid, polish=polish, lens_center=lens_center,
+    )
+    print(f"  solver: backend={resolved['backend']} polish={polish} "
+          f"nsolutions={resolved['nsolutions']}")
+    return solver, solver_params, resolved
 
 
 def build_gw_source_plane_problem(ctx, cfg):
@@ -168,44 +251,22 @@ def build_gw_source_plane_problem(ctx, cfg):
     use_layout = bool(cfg_full.get("use_parameter_layout"))
     kwargs_truth = ctx["kwargs_lens"] if use_layout else _build_kwargs_lens(truth_params)
 
-    solver_backend = nautilus_cfg.get("solver_backend", "helens")
+    solver, solver_params, _ = build_nautilus_solver(ctx, cfg_full, n_images)
 
-    if solver_backend == "helens":
-        pixel_grid = ctx.get("pixel_grid")
-        if pixel_grid is None:
-            from .data_sim import setup_pixel_grid
-            pg_kwargs = cfg_full.get("em", {}).get("pixel_grid_kwargs", {})
-            pixel_grid = setup_pixel_grid(**pg_kwargs)
-            print("  pixel_grid not in ctx (EM disabled) — created from cfg pixel_grid_kwargs.")
-        solver, _, solver_params = setup_helens_solver(pixel_grid, lens_gw)
+    y_truth = list(gw_cfg.get("source_pos", [truth_params.get("y0gw", 0.05),
+                                               truth_params.get("y1gw", 1e-6)]))
+    x_img_truth = [float(truth_params[f"image_x{i+1}"]) for i in range(n_images)]
+    y_img_truth = [float(truth_params[f"image_y{i+1}"]) for i in range(n_images)]
+    validate_helens_solver(solver, solver_params, kwargs_truth,
+                            y_truth, x_img_truth, y_img_truth,
+                            tol=nautilus_cfg.get("solver_validation_tol", 0.05),
+                            lens_gw=lens_gw)
 
-        y_truth = list(gw_cfg.get("source_pos", [truth_params.get("y0gw", 0.05),
-                                                   truth_params.get("y1gw", 1e-6)]))
-        x_img_truth = [float(truth_params[f"image_x{i+1}"]) for i in range(n_images)]
-        y_img_truth = [float(truth_params[f"image_y{i+1}"]) for i in range(n_images)]
-        validate_helens_solver(solver, solver_params, kwargs_truth,
-                                y_truth, x_img_truth, y_img_truth,
-                                tol=nautilus_cfg.get("solver_validation_tol", 0.05))
-
-        def solve_fn(y0, y1, kwargs_lens):
-            cx = float(kwargs_lens[0].get("center_x", 0.0))
-            cy = float(kwargs_lens[0].get("center_y", 0.0))
-            return _solve_images(solver, solver_params, y0, y1, kwargs_lens, cx, cy, n_images)
-
-    else:
-        from jaxtronomy.LensModel.lens_model import LensModel
-        from jaxtronomy.LensModel.Solver.lens_equation_solver import LensEquationSolver
-
-        lens_model_list = ctx.get("lens_model_list", cfg_full["lens"]["lens_model_list"])
-        zl = cfg_full["lens"]["zl"]
-        zs = cfg_full["lens"]["zs"]
-        lensModel = LensModel(lens_model_list=lens_model_list, z_lens=zl, z_source=zs)
-        jax_solver = LensEquationSolver(lensModel)
-
-        def solve_fn(y0, y1, kwargs_lens):
-            cx = float(kwargs_lens[0].get("center_x", 0.0))
-            cy = float(kwargs_lens[0].get("center_y", 0.0))
-            return _solve_images_jaxtronomy(jax_solver, y0, y1, kwargs_lens, cx, cy, n_images)
+    def solve_fn(y0, y1, kwargs_lens):
+        cx = float(kwargs_lens[0].get("center_x", 0.0))
+        cy = float(kwargs_lens[0].get("center_y", 0.0))
+        return _solve_images(solver, solver_params, y0, y1, kwargs_lens, cx, cy,
+                             n_images, lens_gw=lens_gw)
 
     if use_layout:
         from .parameter_layout import (
@@ -285,44 +346,22 @@ def build_em_gw_source_plane_problem(ctx, cfg):
     use_layout = bool(cfg_full.get("use_parameter_layout"))
     kwargs_truth = ctx["kwargs_lens"] if use_layout else _build_kwargs_lens(truth_params)
 
-    solver_backend = nautilus_cfg.get("solver_backend", "helens")
+    solver, solver_params, _ = build_nautilus_solver(ctx, cfg_full, n_images)
 
-    if solver_backend == "helens":
-        pixel_grid = ctx.get("pixel_grid")
-        if pixel_grid is None:
-            from .data_sim import setup_pixel_grid
-            pg_kwargs = cfg_full.get("em", {}).get("pixel_grid_kwargs", {})
-            pixel_grid = setup_pixel_grid(**pg_kwargs)
-            print("  pixel_grid not in ctx — created from cfg pixel_grid_kwargs.")
-        solver, _, solver_params = setup_helens_solver(pixel_grid, lens_gw)
+    y_truth = list(gw_cfg.get("source_pos", [truth_params.get("y0gw", 0.05),
+                                               truth_params.get("y1gw", 1e-6)]))
+    x_img_truth = [float(truth_params[f"image_x{i+1}"]) for i in range(n_images)]
+    y_img_truth = [float(truth_params[f"image_y{i+1}"]) for i in range(n_images)]
+    validate_helens_solver(solver, solver_params, kwargs_truth,
+                            y_truth, x_img_truth, y_img_truth,
+                            tol=nautilus_cfg.get("solver_validation_tol", 0.05),
+                            lens_gw=lens_gw)
 
-        y_truth = list(gw_cfg.get("source_pos", [truth_params.get("y0gw", 0.05),
-                                                   truth_params.get("y1gw", 1e-6)]))
-        x_img_truth = [float(truth_params[f"image_x{i+1}"]) for i in range(n_images)]
-        y_img_truth = [float(truth_params[f"image_y{i+1}"]) for i in range(n_images)]
-        validate_helens_solver(solver, solver_params, kwargs_truth,
-                                y_truth, x_img_truth, y_img_truth,
-                                tol=nautilus_cfg.get("solver_validation_tol", 0.05))
-
-        def solve_fn(y0, y1, kwargs_lens):
-            cx = float(kwargs_lens[0].get("center_x", 0.0))
-            cy = float(kwargs_lens[0].get("center_y", 0.0))
-            return _solve_images(solver, solver_params, y0, y1, kwargs_lens, cx, cy, n_images)
-
-    else:
-        from jaxtronomy.LensModel.lens_model import LensModel
-        from jaxtronomy.LensModel.Solver.lens_equation_solver import LensEquationSolver
-
-        lens_model_list = ctx.get("lens_model_list", cfg_full["lens"]["lens_model_list"])
-        zl = cfg_full["lens"]["zl"]
-        zs = cfg_full["lens"]["zs"]
-        lensModel = LensModel(lens_model_list=lens_model_list, z_lens=zl, z_source=zs)
-        jax_solver = LensEquationSolver(lensModel)
-
-        def solve_fn(y0, y1, kwargs_lens):
-            cx = float(kwargs_lens[0].get("center_x", 0.0))
-            cy = float(kwargs_lens[0].get("center_y", 0.0))
-            return _solve_images_jaxtronomy(jax_solver, y0, y1, kwargs_lens, cx, cy, n_images)
+    def solve_fn(y0, y1, kwargs_lens):
+        cx = float(kwargs_lens[0].get("center_x", 0.0))
+        cy = float(kwargs_lens[0].get("center_y", 0.0))
+        return _solve_images(solver, solver_params, y0, y1, kwargs_lens, cx, cy,
+                             n_images, lens_gw=lens_gw)
 
     em_data = jnp.array(em_obs["data"])
 

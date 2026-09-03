@@ -5,15 +5,20 @@ This module provides functions to set up lens mass models compatible with
 herculens and solve for image positions given a source position.
 """
 
+import copy as _copy
+import warnings
+
+import jax
 import jax.numpy as jnp
 from jaxtronomy.LensModel.lens_model import LensModel
 from jaxtronomy.LensModel.Solver.lens_equation_solver import LensEquationSolver
 from herculens.MassModel.mass_model import MassModel
 from .differentiable_solver import DifferentiableLensEquationSolver
+from .image_finders import filter_jaxtronomy_kwargs, make_image_finder
 from .config import (
-    HELEN_LENS_SOLVER_PARAM_KEYS,
-    IMAGE_POSITION_SOLVER_DEFAULTS,
-    LENSTRONOMY_GRID_KWARGS,
+    LEGACY_SOLVER_KEY_HOME,
+    SHARED_SOLVER_KEYS,
+    SOLVER_BACKENDS,
     SOLVER_PARAMS,
 )
 
@@ -26,25 +31,179 @@ except ImportError:
     LensEquationSolver_helens = None
 
 
+def polish_truth_images(x_image, y_image, source_pos, kwargs_lens, mass_model,
+                        n_newton=8):
+    """Newton-refine setup-time image positions so they match the inference solver.
+
+    jaxtronomy returns roots good to ~1e-7, while the solver used inside the
+    likelihood Newton-polishes to machine precision. Left alone, that 1e-7 gap means
+    the *truth* parameters are not quite the peak of the likelihood: the Fisher
+    expansion gets built slightly off-centre, and the gradient at truth comes out at
+    ~0.05 sigma instead of ~1e-11. Measured on catalog system 555, where it also
+    showed up as a 1.75 s time-delay residual.
+
+    Non-differentiable on purpose -- this runs once at setup, never inside a
+    likelihood.
+    """
+    from .differentiable_solver import newton_solve
+
+    beta = jnp.array([float(source_pos[0]), float(source_pos[1])])
+
+    def ray_shoot(x, y, kw):
+        return mass_model.ray_shooting(x, y, kw)
+
+    def refine(theta):
+        return newton_solve(beta, kwargs_lens, ray_shoot, theta, n_newton=n_newton)
+
+    thetas = jnp.stack([jnp.atleast_1d(x_image), jnp.atleast_1d(y_image)], axis=-1)
+    polished = jax.vmap(refine)(thetas)
+    return polished[:, 0], polished[:, 1]
+
+
+def normalize_solver_params(solver_params=None, n_images=None):
+    """Merge user solver settings onto the nested defaults and resolve "auto" values.
+
+    Accepts both the nested layout (``{"backend": ..., "helens": {...}}``) and the
+    legacy flat one, routing flat keys into their nest with a DeprecationWarning.
+    Returns ``(shared, backend_name, backend_kwargs)``:
+
+      shared          backend / nsolutions / n_newton / duplicate_tol, with
+                      nsolutions resolved to n_images + 1 when it was "auto"
+      backend_name    the value of shared["backend"] (still possibly "auto";
+                      make_image_finder resolves it against the lens model list)
+      backend_kwargs  that backend's own settings, with the ones its chosen
+                      routine does not accept already filtered out
+    """
+    merged = _copy.deepcopy(SOLVER_PARAMS)
+    user = dict(solver_params or {})
+
+    legacy = {}
+    for key in list(user):
+        if key in SHARED_SOLVER_KEYS or key in SOLVER_BACKENDS:
+            continue
+        home = LEGACY_SOLVER_KEY_HOME.get(key)
+        if home is None:
+            raise ValueError(
+                f"Unknown solver_params key {key!r}. Valid shared keys: "
+                f"{sorted(SHARED_SOLVER_KEYS)}; per-backend blocks: "
+                f"{sorted(SOLVER_BACKENDS)}."
+            )
+        legacy.setdefault(home, {})[key] = user.pop(key)
+
+    if legacy:
+        moved = {k: sorted(v) for k, v in legacy.items()}
+        warnings.warn(
+            "Flat solver_params keys are deprecated; nest them under their backend. "
+            f"Moved {moved}. For example: "
+            "cfg['gw']['solver_params']['helens']['nsubdivisions'] = 8",
+            DeprecationWarning, stacklevel=2,
+        )
+
+    for backend, values in legacy.items():
+        merged[backend].update(values)
+    for key, value in user.items():
+        if key in SOLVER_BACKENDS:
+            merged[key].update(value or {})
+        else:
+            merged[key] = value
+
+    shared = {k: merged[k] for k in SHARED_SOLVER_KEYS}
+    if shared["nsolutions"] == "auto":
+        if n_images is None:
+            raise ValueError(
+                "solver_params['nsolutions'] = 'auto' needs n_images to resolve. "
+                "Pass n_images, or set an explicit integer."
+            )
+        # One spare slot: it holds the central image when the profile has one
+        # (gamma < 2) and stays padding when it does not.
+        shared["nsolutions"] = int(n_images) + 1
+    shared["nsolutions"] = int(shared["nsolutions"])
+
+    backend_name = shared["backend"]
+    if backend_name == "helens":
+        backend_kwargs = dict(merged["helens"])
+    else:
+        jx = dict(merged["jaxtronomy"])
+        solver = jx.get("solver", "analytical")
+        backend_kwargs = filter_jaxtronomy_kwargs(solver, jx)
+        backend_kwargs["solver"] = solver
+    return shared, backend_name, backend_kwargs
+
+
+def solve_kwargs_for(backend_name, backend_kwargs, nsolutions):
+    """The subset of settings that belong on ``solver.solve(...)`` rather than the
+    finder constructor. helens configures its search per call; jaxtronomy is
+    configured once at construction, so it only needs nsolutions."""
+    if backend_name == "helens":
+        return {
+            "nsolutions": nsolutions,
+            "niter": backend_kwargs.get("niter", 8),
+            "scale_factor": backend_kwargs.get("scale_factor", 2),
+            "nsubdivisions": backend_kwargs.get("nsubdivisions", 5),
+        }
+    return {"nsolutions": nsolutions}
+
+
+def build_lens_solver(lens_model_list, zl, zs, lens_gw, solver_params=None,
+                      n_images=None, pixel_grid=None, polish=True,
+                      lens_center=(0.0, 0.0)):
+    """Build the solver used inside a likelihood, honouring cfg solver settings.
+
+    Single construction point for every source-plane method, so a nautilus-source
+    run and an hmc-source run on the same cfg use identically-configured solvers.
+    Returns ``(solver, solve_kwargs, resolved)`` where ``solve_kwargs`` is splatted
+    into ``solver.solve(...)`` and ``resolved`` records what the settings became.
+    """
+    shared, backend_name, backend_kwargs = normalize_solver_params(
+        solver_params, n_images=n_images)
+
+    grid_x = grid_y = None
+    solver_pixel_grid = None
+    if pixel_grid is not None:
+        pixel_scale_factor = backend_kwargs.get("pixel_scale_factor", 0.8)
+        solver_pixel_grid = pixel_grid.create_model_grid(
+            pixel_scale_factor=pixel_scale_factor)
+        grid_x = solver_pixel_grid.pixel_coordinates[0]
+        grid_y = solver_pixel_grid.pixel_coordinates[1]
+
+    finder_kwargs = {k: v for k, v in backend_kwargs.items()
+                     if k != "pixel_scale_factor"}
+    finder, resolved_backend = make_image_finder(
+        backend_name, lens_model_list, zl=zl, zs=zs,
+        ray_shooting_func=lens_gw.ray_shoot,
+        grid_x=grid_x, grid_y=grid_y, backend_kwargs=finder_kwargs,
+    )
+
+    solver = DifferentiableLensEquationSolver(
+        finder, lens_center=lens_center,
+        n_newton=int(shared["n_newton"]), polish=polish,
+    )
+    solve_kwargs = solve_kwargs_for(resolved_backend, backend_kwargs,
+                                    shared["nsolutions"])
+    resolved = {
+        **shared,
+        "backend": resolved_backend,
+        "polish": polish,
+        "backend_kwargs": backend_kwargs,
+        "solver_pixel_grid": solver_pixel_grid,
+    }
+    return solver, solve_kwargs, resolved
+
+
 def _merge_image_position_solver_kwargs(solver_params=None):
     """Build kwargs for jaxtronomy ``LensEquationSolver.image_position_from_source``.
 
-    Merges ``IMAGE_POSITION_SOLVER_DEFAULTS`` with user ``solver_params``, ignoring
-    Helens-only keys (``nsolutions``, ``niter``, …). Returns
-    ``(solver_kind, kwargs)`` where ``solver_kind`` is ``\"lenstronomy\"`` or
-    ``\"analytical\"``.
+    Kept for the setup-time (truth) solve, which calls jaxtronomy directly rather
+    than going through an image finder. Returns ``(solver_kind, kwargs)``.
     """
-    merged = {**IMAGE_POSITION_SOLVER_DEFAULTS, **(solver_params or {})}
-    filtered = {
-        k: v
-        for k, v in merged.items()
-        if k not in HELEN_LENS_SOLVER_PARAM_KEYS
-    }
-    solver_kind = filtered.pop("solver", "lenstronomy")
-    if solver_kind == "analytical":
-        for gk in LENSTRONOMY_GRID_KWARGS:
-            filtered.pop(gk, None)
-    return solver_kind, filtered
+    _, backend_name, backend_kwargs = normalize_solver_params(
+        solver_params, n_images=1)
+    if backend_name == "helens":
+        # The truth-time solve is always jaxtronomy; fall back to its defaults.
+        _, _, backend_kwargs = normalize_solver_params(
+            {**(solver_params or {}), "backend": "jaxtronomy"}, n_images=1)
+    solver_kind = backend_kwargs.pop("solver", "analytical")
+    return solver_kind, backend_kwargs
 
 
 def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos, 
@@ -117,7 +276,12 @@ def setup_lens(lens_model_list, kwargs_lens, zl, zs, source_pos,
     # Convert to JAX arrays
     x_image_true = jnp.array(x_image_true)
     y_image_true = jnp.array(y_image_true)
-    
+
+    # Refine to machine precision so the truth matches what the likelihood's solver
+    # produces; otherwise the Fisher expansion is built ~1e-7 off the actual peak.
+    x_image_true, y_image_true = polish_truth_images(
+        x_image_true, y_image_true, source_pos, kwargs_lens, lens_mass_model)
+
     return kwargs_lens, x_image_true, y_image_true, lens_mass_model
 
 # def setup_lens_mst(lens_model_list, kwargs_lens, zl, zs, source_pos,
@@ -254,48 +418,167 @@ def setup_lens_mst(lens_model_list, kwargs_lens, zl, zs, source_pos,
 
     return kwargs_lens_original, x_image_true, y_image_true, lens_mass_model
 
-def remove_central_image(thetas, betas, cx0, cy0):
-    """Remove the central image (closest to lens center) from solver results.
-    
-    Args:
-        thetas: Array of shape (N, 2) with image plane positions
-        betas: Array of shape (N, 2) with source plane positions
-        cx0: Lens center x coordinate
-        cy0: Lens center y coordinate
-    
-    Returns:
-        theta_x_no_central: Array of image x positions without central image
-        theta_y_no_central: Array of image y positions without central image
-        beta_x_no_central: Array of source x positions without central image
-        beta_y_no_central: Array of source y positions without central image
+def resolve_duplicate_tol(duplicate_tol, polished=True, pixel_scale=None):
+    """Separation below which two solutions are the same image.
+
+    Depends on how accurate the positions actually are, not on the grid: Newton-
+    polished positions are good to ~1e-9 arcsec, so 1e-6 is a thousandfold margin
+    while staying far below any real image separation (two images that close have
+    merged on the critical curve). Unpolished helens positions are only good to the
+    final triangle, so there the grid scale is the right yardstick.
     """
-    # thetas, betas: shape (N, 2)
+    if duplicate_tol is not None:
+        return float(duplicate_tol)
+    if polished:
+        return 1e-6
+    if pixel_scale is None:
+        return 1e-3
+    return 0.5 * float(pixel_scale)
+
+
+def select_images(thetas, betas, cx0, cy0, n_images, tol_dup=1e-6,
+                  magnifications=None):
+    """Pick the ``n_images`` real, distinct, non-central images out of the solver slots.
+
+    Replaces the old "drop whichever slot is nearest the lens centre" rule, which is
+    only correct when the extra slot really is central. It is not when the finder
+    returns a duplicate instead (fold configurations, where two images are so close
+    the search brackets one of them twice) or misses an image altogether -- in both
+    cases the blind rule discards a *real* image and keeps the bogus one, silently.
+
+    jit-safe: fixed shapes, no data-dependent branching. Slots that are padding,
+    duplicates or central are pushed to the end and dropped; if fewer than
+    ``n_images`` survive, the shortfall is filled by repeating the first valid slot
+    (never the lens centre, which is an EPL singularity and would poison the
+    gradient with NaN). ``flags["n_distinct"]`` reports the shortfall so the caller
+    can reject the point -- see the image_count factor in the prob models.
+
+    Returns ``(theta_x, theta_y, beta_x, beta_y, mu, flags)``.
+    """
     theta_x, theta_y = thetas.T
     beta_x, beta_y = betas.T
+    n = theta_x.shape[0]
 
-    idx = jnp.argmin(jnp.hypot(theta_x - cx0, theta_y - cy0))  # int index
-    n = theta_x.shape[0]  # static
+    r_from_centre = jnp.hypot(theta_x - cx0, theta_y - cy0)
+    is_padding = r_from_centre < 1e-8
 
-    # Create a mask: True for all indices except idx
-    mask = jnp.arange(n) != idx
-    
-    # Reorder: all masked elements first, then the idx element
-    # Use argsort on ~mask to put False (idx) at the end
-    order = jnp.argsort(~mask, stable=True)
-    
-    # Apply reordering
-    theta_x_reordered = theta_x[order]
-    theta_y_reordered = theta_y[order]
-    beta_x_reordered = beta_x[order]
-    beta_y_reordered = beta_y[order]
-    
-    # Return only the non-central images (first n-1 elements)
-    theta_x_no_central = theta_x_reordered[:n-1]
-    theta_y_no_central = theta_y_reordered[:n-1]
-    beta_x_no_central = beta_x_reordered[:n-1]
-    beta_y_no_central = beta_y_reordered[:n-1]
-    
-    return theta_x_no_central, theta_y_no_central, beta_x_no_central, beta_y_no_central
+    # Duplicate: an *earlier* slot sits within tol_dup. Upper-triangular so exactly
+    # one member of each duplicated pair survives.
+    sep = jnp.hypot(theta_x[:, None] - theta_x[None, :],
+                    theta_y[:, None] - theta_y[None, :])
+    earlier = jnp.tril(jnp.ones((n, n), dtype=bool), k=-1)
+    is_duplicate = jnp.any((sep < tol_dup) & earlier, axis=1)
+
+    # Central image: only look for one when there is actually a slot to spare.
+    # With nsolutions = n_images + 1, a surviving count above n_images means the
+    # extra solution is the central image (profiles with gamma < 2 have one; gamma
+    # >= 2 are singular at the centre and have none). Testing for an excess first is
+    # what stops the old failure -- dropping the slot nearest the centre even when
+    # every slot is a genuine image, which discards a real one.
+    alive = ~is_padding & ~is_duplicate
+    has_excess = jnp.sum(alive) > n_images
+
+    # Prefer a demagnified candidate: the central image is always |mu| < 1. Fall
+    # back to plain distance if magnifications were not supplied.
+    if magnifications is None:
+        candidate = alive
+    else:
+        demagnified = alive & (jnp.abs(magnifications) < 1.0)
+        candidate = jnp.where(jnp.any(demagnified), demagnified, alive)
+
+    masked_r = jnp.where(candidate, r_from_centre, jnp.inf)
+    nearest = jnp.argmin(masked_r)
+    is_central = (jnp.zeros(n, dtype=bool).at[nearest].set(True)
+                  & candidate & has_excess)
+
+    keep = alive & ~is_central
+    n_distinct = jnp.sum(keep)
+
+    # Stable sort so kept slots come first in their original order.
+    order = jnp.argsort(~keep, stable=True)
+    theta_x_s, theta_y_s = theta_x[order], theta_y[order]
+    beta_x_s, beta_y_s = beta_x[order], beta_y[order]
+    keep_s = keep[order]
+    mu_s = magnifications[order] if magnifications is not None else jnp.ones(n)
+
+    # Fill any shortfall with slot 0 (a real image whenever one was found) rather
+    # than leaving a padding slot at the lens centre in the output.
+    valid_slot = jnp.arange(n) < n_distinct
+    theta_x_s = jnp.where(valid_slot, theta_x_s, theta_x_s[0])
+    theta_y_s = jnp.where(valid_slot, theta_y_s, theta_y_s[0])
+    beta_x_s = jnp.where(valid_slot, beta_x_s, beta_x_s[0])
+    beta_y_s = jnp.where(valid_slot, beta_y_s, beta_y_s[0])
+    mu_s = jnp.where(valid_slot, mu_s, mu_s[0])
+
+    n_keep = int(n_images)
+    flags = {
+        "n_slots": n,
+        "n_padding": jnp.sum(is_padding),
+        "n_duplicate": jnp.sum(is_duplicate),
+        "has_central": jnp.any(is_central),
+        "n_distinct": n_distinct,
+        "n_kept": n_keep,
+        "keep_mask": keep_s[:n_keep],
+    }
+    return (theta_x_s[:n_keep], theta_y_s[:n_keep],
+            beta_x_s[:n_keep], beta_y_s[:n_keep], mu_s[:n_keep], flags)
+
+
+def solve_and_select(solver, solver_params, betas, kwargs_lens, lens_gw, n_images,
+                     cx0=0.0, cy0=0.0):
+    """Solve the lens equation and pick the real, distinct, non-central images.
+
+    The single path used by every source-plane likelihood, so all of them agree on
+    what counts as an image. Magnifications are computed here for all solver slots
+    and returned, because the caller needs them anyway for the log-Jacobian term --
+    computing them once and passing them down costs one extra slot's worth of work
+    rather than a second full evaluation.
+
+    Returns ``(x_pos, y_pos, mu, flags)``. ``flags["n_distinct"]`` is the count of
+    genuine images found; when it is not ``n_images`` the parameters are
+    inconsistent with the observation and the caller should reject the point.
+    """
+    thetas, betas_out = solver.solve(betas, kwargs_lens, **solver_params)
+    mu_all = lens_gw.magnification(thetas[:, 0], thetas[:, 1], kwargs_lens)
+    tol = resolve_duplicate_tol(
+        getattr(solver, "duplicate_tol", None),
+        polished=getattr(solver, "polish", True),
+    )
+    x_pos, y_pos, _, _, mu, flags = select_images(
+        thetas, betas_out, cx0, cy0, n_images, tol_dup=tol, magnifications=mu_all)
+    return x_pos, y_pos, mu, flags
+
+
+def image_count_penalty(flags, n_images, penalty=-1e10):
+    """Log-density term that rejects parameters yielding the wrong image count.
+
+    Returns 0 when the solver found exactly ``n_images`` distinct non-central
+    images, and a large negative number otherwise. Large-but-finite rather than
+    ``-inf``: ``-inf`` makes the gradient NaN and NUTS drags that through the whole
+    trajectory instead of rejecting the proposal cleanly.
+
+    Note this is a *guard*, not the primary control. Off-caustic parameters that
+    genuinely produce fewer images are physics, and the way to keep a chain away
+    from them is a source prior box inside the caustic
+    (``cfg["gw"]["source_box_half_width"]``), which the diagnostic checks. Because
+    the penalty is constant its gradient is zero, so NUTS sees a cliff and reports a
+    divergence rather than being pushed back.
+    """
+    return jnp.where(flags["n_distinct"] == n_images, 0.0, penalty)
+
+
+def remove_central_image(thetas, betas, cx0, cy0):
+    """Backwards-compatible wrapper over :func:`select_images`.
+
+    Keeps the old contract -- return ``n - 1`` images, dropping one slot -- for the
+    call sites and scripts that still expect it. New code should call
+    ``select_images`` directly, which reports *why* a slot was dropped and how many
+    genuine images were actually found.
+    """
+    n = thetas.shape[0]
+    theta_x, theta_y, beta_x, beta_y, _, _ = select_images(
+        thetas, betas, cx0, cy0, n_images=n - 1)
+    return theta_x, theta_y, beta_x, beta_y
 
 
 def setup_helens_solver(pixel_grid, lens_gw, pixel_scale_factor=0.8, solver_params=None):

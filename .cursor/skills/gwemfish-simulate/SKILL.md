@@ -7,6 +7,8 @@ description: Builds GWEMFISH simulation context via setup_em_observation and set
 
 Read `gwemfish-local` (`~/.cursor/skills/gwemfish-local/`) for `LENS_RECONSTRUCTION_ROOT` if set; else use the open repo root. Grep the closest example in `examples/scripts/` before writing new code.
 
+**For any cfg key — what it controls, its default, what breaks if wrong — use `gwemfish-cfg`.** This skill covers the simulation workflow; that one is the settings authority.
+
 ## Workflow
 
 1. **JAX env** — set `XLA_FLAGS`, `jax_enable_x64`, `jax_platform_name="cpu"` before `import jax`.
@@ -15,6 +17,35 @@ Read `gwemfish-local` (`~/.cursor/skills/gwemfish-local/`) for `LENS_RECONSTRUCT
 4. **GW** — `ctx = setup_gw_observation(ctx, cfg=ctx["cfg"])` unless `gw.enabled` is false.
 5. **Optional** — `ctx = prune_gw_images(ctx, n_keep=...)`; `plot_system_observation(ctx, cfg)` (clean / noisy / S/N); `plot_psf(ctx, cfg)`; PAL mirror via `simulate_in_pal(ctx)`.
 6. **Inspect** — confirm `ctx["truth_params"]`, `kwargs_lens`, `em_obs` / `gw_obs`, image positions.
+
+## The lens-equation solver at simulation time
+
+`setup_lens` produces the truth image positions, and it **always uses jaxtronomy**, whatever `cfg["gw"]["solver_params"]["backend"]` says — `backend` governs the *inference* finder. What the simulation uses is `solver_params["jaxtronomy"]["solver"]`, so keep that key set even when inferring with helens.
+
+```python
+cfg["gw"]["solver_params"]["jaxtronomy"]["solver"] = "analytical"   # closed form, EPL-like
+```
+
+**Prefer `"analytical"` over `"lenstronomy"` for EPL/SIE systems.** Measured on the Euclid catalog: the grid solver returned a spurious third image with `|mu| = 0.0` on systems 749 and 1122, giving `dL_eff = dL/sqrt(0) = inf`. The analytical solver returns the correct 2. This happens at truth-generation time, so it corrupts the data before inference starts.
+
+`magnification_limit` (default `1e-4`) sets what counts as an image **for the simulation as well as the inference** — both go through the same solver, so lowering it can raise `n_images`. Intentional: the two stay consistent. Do not raise it to jaxtronomy's suggested `1e-1`, which discards a genuine central image at γ=1.5 (measured `|mu| = 1.4e-3`).
+
+Truth positions are Newton-refined to machine precision so they match what the likelihood's solver produces. Without that the truth sits ~4e-7 arcsec off the likelihood peak, and the Fisher expansion is built off-centre — measured on catalog 555 as a scaled gradient of 0.054 instead of ~1e-12.
+
+## Image count and what it costs you
+
+`n_images` comes from `ctx["x_img_gw"]`, not from `cfg["gw"]["n_images"]` — that key is a hint and mismatches only warn (`_resolve_gw_n_images` raises if `truth_params`/`gw_obs` disagree with each other).
+
+GW-only supplies `2*n_images - 1` observables, which caps how many parameters inference can carry:
+
+| images | observables | free parameters supported |
+|---|---|---|
+| 2 double | 3 | ~3 |
+| 3 naked cusp | 5 | ~4 |
+| 4 quad | 7 | ~5 |
+| 5 quad+central (γ<2) | 9 | ~5+ |
+
+Verified end to end at all four. Free more than the data supports and the Fisher goes degenerate — widths come back many times the parameter values. Diagnostic check 4 reports this before sampling.
 
 ## Custom PSF
 

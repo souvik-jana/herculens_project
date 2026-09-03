@@ -40,6 +40,41 @@ Multi-method comparison allowed (e.g. deriv-approx + nautilus-source + fisher in
 
 For GW modes, ask which Nautilus variant when unclear: **source-plane** (`y0gw`/`y1gw`) vs **image-plane** (`image_x*`/`image_y*`). EM-only: either name works; prefer `nautilus-source`.
 
+### Cost — decides which methods are practical
+
+Per likelihood call, 4-image system, 40×40 grid. Every call solves the lens equation; jaxtronomy runs on the host behind `jax.pure_callback` (one round-trip per call).
+
+| backend | polish | ms/call | per 1e5 calls |
+|---|---|---|---|
+| jaxtronomy | `False` | **41** | **~69 min** ← `polish: "auto"` picks this |
+| jaxtronomy | `True` | 99 | ~165 min |
+| helens | `False` | 58 | ~96 min |
+| helens | `True` | 120 | ~200 min |
+
+How often each method calls the solver:
+
+| method | solver evaluated at | practical cost |
+|---|---|---|
+| `fisher-source`, `deriv-approx-source` | **`u0` only** — `jax.hessian` is forward-mode AD at one point; sampling then runs on a Gaussian or the Taylor surrogate | cheap |
+| `hmc-source`, `hmc-informed-source` | every leapfrog step — up to ~1024 per sample at `max_tree_depth=10` | expensive |
+| `nautilus-source` | every likelihood call, ~1e5–1e6 of them | **hours** |
+| `fisher`, `deriv-approx`, `hmc`, `hmc-informed`, `nautilus-image` | never — image positions are sampled directly | n/a |
+
+Practical workflow: iterate with `fisher-source`/`deriv-approx-source`, run `nautilus-source` once at the end with a checkpoint.
+
+### How many parameters the data can carry
+
+GW-only supplies `2*n_images - 1` numbers (`n_images - 1` time delays + `n_images` effective distances):
+
+| images | observables | free parameters supported |
+|---|---|---|
+| 2 double | 3 | ~3 |
+| 3 naked cusp | 5 | ~4 |
+| 4 quad | 7 | ~5 |
+| 5 quad+central | 9 | ~5+ |
+
+Free as many as there are observables and the Fisher goes degenerate: it still inverts, but widths come back many times the parameter values. Measured on catalog 555 (3-image): with 5 free, σ/truth was 13.7–32.4; fixing one parameter gave 0.23–1.14. Count the budget from the priors dict — `y0gw`/`y1gw` are always sampled, `T_star`/`dL` unless pinned — not from the image count alone. Diagnostic check 4 reports it before sampling.
+
 ## Question 2.5 — Parameter layout (ask if unclear, `GW-only`/`EM+GW`, any method)
 
 Ask: does the lens have more than one independently-parametrized mass component (e.g. main lens + a second galaxy — not just a fixed external shear), or does the user want auto-generated per-profile priors?
@@ -87,6 +122,46 @@ ctx["cfg"]["gw"]["error_scales"]["epsilon"] = 1e-4
 See `gwemfish-plot` skill for overlay interpretation.
 
 ## Question 4 — Nautilus variant (when method includes nautilus-source or nautilus-image)
+
+### Three traps to check before anything else
+
+**1. Nautilus reads `cfg["nautilus"]`, not `cfg["inference"]`.** `num_chains`, `num_warmup`, `num_samples`, `informed`, `regularize` are NUTS controls and are **silently ignored** — the run uses defaults throughout and says nothing. Correct block:
+
+```python
+cfg={
+    "nautilus": {
+        "n_live": 500,
+        "n_eff": 2000,
+        "n_like_max": 200_000,          # stop valve — see trap 2
+        "filepath": os.path.join(out, "nautilus_source.hdf5"),
+        "resume": True, "prior_check": True, "verbose": True,
+        # "polish": "auto" is the default and the fast path
+    },
+}
+```
+
+**2. `n_like_max` hits silently.** Measured: `n_like_max=3000` on a 5-parameter problem returned **1 sample**, all finite, no warning — it would have gone straight into a corner plot. Always check the count:
+
+```python
+n = min(len(np.asarray(v)) for v in samples.values())
+if n < 100:
+    raise RuntimeError(f"nautilus returned {n} samples — hit n_like_max during exploration")
+```
+
+**3. Comparing nautilus with the NUTS methods needs matching priors.** Nautilus samples the whole prior box rather than expanding around the truth, and its default `y0gw`/`y1gw` box is `(-1, 1)` against the truth-centred `±source_box_half_width` the others use. Without this the posteriors differ because the *priors* differ:
+
+```python
+SRC = ctx["cfg"]["gw"]["source_pos"]; HW = float(ctx["cfg"]["gw"]["source_box_half_width"])
+ctx["cfg"]["gw"]["source_plane_bounds"] = {
+    "y0gw": (SRC[0] - HW, SRC[0] + HW),
+    "y1gw": (SRC[1] - HW, SRC[1] + HW),
+}
+```
+
+Also: `prior_check` catches prior changes on resume, but **not** changes to `n_live`, `sigma_td`, `epsilon`, or the solver — those silently resume the old problem. Delete the `.hdf5` after any of them.
+
+`truths_nautilus` will not contain `y0gw`/`y1gw` (they are never in `truth_params`), so merge the source position in explicitly when plotting truths.
+
 
 1. **Precursor** — for `nautilus-image`, use `deriv-approx` (default, `informed: True`) or `fisher`, same as always. For `nautilus-source`, four precursors are valid — ask which:
    - **`fisher-source` / `deriv-approx-source`** (recommended default when targeting `nautilus-source`) — direct. `H0`/`keys_to_include`/`u0` are already in `y0gw`/`y1gw` + shared-parameter form, matching `nautilus-source`'s sampling space exactly. `fisher-source` is the cheap no-NUTS option; `deriv-approx-source` gives a real posterior if you want it.
@@ -282,6 +357,39 @@ run_inference(ctx, mode="GW-only", method="hmc-source", cfg={
 3. If **any** NUTS full-likelihood method (`hmc`, `hmc-informed`, `hmc-source`, `hmc-informed-source`): wire **RUN toggle + npz checkpoint** (informed and uninformed alike); default `LOAD_* = False` for first run
 4. Wire block; native source-plane methods use `plot_source_posterior` directly (no `to_source_plane_samples`)
 5. Point to `examples/scripts/gw_only_nautilus.py` as live reference
+
+## Solver and diagnostics — read before running any `*-source` method
+
+Full detail in **`gwemfish-cfg`**. The parts that change how you run inference:
+
+**One solver for every method.** `cfg["gw"]["solver_params"]["backend"]` (`"auto"` | `"helens"` | `"jaxtronomy"`) governs all five source-plane methods including `nautilus-source`. `cfg["nautilus"]["solver_backend"]` is a deprecated alias that **loses** to it — set both and the nautilus one is ignored. For one method only, use a per-call override (`run_inference` deep-merges its cfg):
+
+```python
+run_inference(ctx, mode="GW-only", method="nautilus-source",
+              cfg={"gw": {"solver_params": {"backend": "helens"}}})   # this run only
+```
+
+**Differentiability does not come from the finder.** Both finders are wrapped in `stop_gradient`; a Newton polish with `jax.lax.custom_root` re-attaches derivatives via the implicit function theorem. Both backends give identical derivatives (verified to `4.5e-13`). So the finder is a reliability choice, not a gradient one.
+
+`n_newton` (default 8) is a **step count, not a switch**, and `0` raises — zero steps means every derivative comes back exactly `0.0` with no error and a NaN covariance. The only on/off switch is `cfg["nautilus"]["polish"]`, and only `nautilus-source` reads it.
+
+**Diagnostics — `cfg["inference"]["diagnostics"]`:** `"warn"` (default, prints and continues), `"raise"` (aborts before sampling), `"off"`. Five checks at truth:
+
+| # | check | fails when |
+|---|---|---|
+| 1 | images | solver misses/duplicates an image, or positions differ from the simulation |
+| 2 | observables | time delays / dL_eff do not reproduce the simulation |
+| 3 | source box | prior box reaches past the caustic — **advisory only, never aborts** |
+| 4 | parameters | more free parameters than observables, or `cond > 1e10` |
+| 5 | gradient | truth is not the likelihood peak (`\|g0/√\|H_ii\|\| > 0.5`) |
+
+Thresholds are per-key overridable via `cfg["inference"]["diagnostics_thresholds"]`; give only what you change. Prefer raising one threshold over `diagnostics: "off"`, which disables the checks still working.
+
+`"off"` is **unsafe for the `*-source` family**: their Fisher expansion is built *at* truth, so a bad solve there corrupts everything downstream with nothing to signal it.
+
+**Check 3 and NUTS divergences.** Wrong image counts during sampling are rejected by `numpyro.factor("image_count", -1e10)`. Being constant it has zero gradient, so NUTS cannot be pushed back and reports a **divergence** rather than rejecting cleanly. The real control is keeping the source box inside the caustic (`cfg["gw"]["source_box_half_width"]`, default 0.05); check 3 prints the measured margin. Naked-cusp systems sit close to it — catalog 555 has 0.042".
+
+`fisher-source` and `deriv-approx-source` get **no runtime protection**: the factor contributes exactly 0 to `logp0`/`g0`/`H0` at truth, so the Taylor surrogate never sees it. Their only safeguard is the truth-point diagnostic — which is why `"off"` matters more for them, not less.
 
 ## Execution
 

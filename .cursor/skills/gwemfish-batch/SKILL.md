@@ -26,7 +26,19 @@ base:
   zl: 0.7
   zs: 1.5
   em: { npix, pix_scl, psf_fwhm, background_rms, exposure_time, kwargs_lens_light: [...] }
-  gw: { sigma_td, sigma_dL_eff, epsilon, sigma_td_floor, image_box_half_width }
+  gw:
+    sigma_td: ...
+    sigma_dL_eff: ...
+    epsilon: ...
+    sigma_td_floor: ...
+    image_box_half_width: ...
+    # Lens-equation solver, nested by backend. Anything omitted keeps the gwemfish
+    # default. Full key reference: the `gwemfish-cfg` skill.
+    solver_params:
+      backend: "auto"        # "auto" | "helens" | "jaxtronomy"
+      nsolutions: "auto"     # -> n_images + 1
+      # helens:     { nsubdivisions: 8 }        # raise first when an image is missed
+      # jaxtronomy: { solver: "analytical", magnification_limit: 1.0e-4 }
   inference_mode: "EM+GW"
   output_dir: "sims"
 simulations:
@@ -41,6 +53,15 @@ simulations:
 - SHEAR second component: `gamma1`, `gamma2`, `ra_0`, `dec_0`
 - Param names in inference: `lens0_*`, `lens1_*`
 - Per-sim optional `lens_model_list` override
+
+**lensing-mock installs gwemfish as a copy, not editable.** Check before trusting that a gwemfish change reached a batch run:
+
+```bash
+.venv/bin/python -c "import gwemfish, gwemfish.config as c; \
+print(gwemfish.__file__); print(sorted(c.SOLVER_PARAMS))"
+```
+
+If the path is under `lensing-mock/.venv/.../site-packages/`, it is a snapshot — reinstall after changing gwemfish. A flat `SOLVER_PARAMS` (`['niter','nsolutions','nsubdivisions','scale_factor']`) means the snapshot predates the nested solver config; the nested one has `['backend','duplicate_tol','helens','jaxtronomy','n_newton','nsolutions']`. `build_cfg` merges YAML onto whichever it finds, so it works either way — you just will not get the new keys.
 
 **`configs/priors.yaml`**
 
