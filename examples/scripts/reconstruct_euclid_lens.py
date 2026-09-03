@@ -391,17 +391,59 @@ if RUN["deriv-approx-source"]:
         },
     )
 
+# --- Nautilus priors from the fisher-source covariance -----------------------
+# Nautilus explores its whole prior box. Left at the wide defaults it spends most of
+# its likelihood calls far from the posterior, which at ~190 ms/call is the difference
+# between hours and days. fisher-source is the natural precursor: its keys_to_include
+# is already y0gw/y1gw + shared parameters, exactly nautilus-source's sampling space,
+# so no image->source conversion is needed.
+#
+# Set False to keep the wide boxes (source_plane_bounds / DEFAULT_PRIORS_GW_SOURCE_PLANE)
+# -- do that if you want nautilus to be an independent check rather than a refinement,
+# since priors this tight assume the Fisher ellipse is in the right place.
+NAUTILUS_PRIORS_FROM_FISHER = True
+NAUTILUS_SIGMA_SPAN = 4.0
+
+if RUN["nautilus-source"] and NAUTILUS_PRIORS_FROM_FISHER:
+    if not RUN["fisher-source"]:
+        print("NAUTILUS_PRIORS_FROM_FISHER on but fisher-source did not run; "
+              "keeping the existing priors.")
+    else:
+        from gwemfish.simple_pipeline import _fisher_covariance
+
+        keys = ctx_gw_source_gw["likelihood"]["keys_to_include"]
+        u0 = np.asarray(ctx_gw_source_gw["likelihood"]["u0"], dtype=float)
+        H0 = np.asarray(ctx_gw_source_gw["fisher"]["H0"], dtype=float)
+        # Whitened inversion, not plain inv(-H0): raw units span ~12 orders of
+        # magnitude here and a direct inverse can return negative variances.
+        sigmas = np.sqrt(np.diag(np.asarray(_fisher_covariance(-H0, keys))))
+
+        print(f"\n--- nautilus priors from fisher-source, +/-{NAUTILUS_SIGMA_SPAN} sigma ---")
+        for i, key in enumerate(keys):
+            sig = float(sigmas[i])
+            if not np.isfinite(sig) or sig <= 0:
+                print(f"  {key:14s} skip (sigma={sig}) -- keeping existing prior")
+                continue
+            mu = float(u0[i])
+            lo, hi = mu - NAUTILUS_SIGMA_SPAN * sig, mu + NAUTILUS_SIGMA_SPAN * sig
+            ctx_gw_source_gw["cfg"]["priors"][key] = dist.Uniform(lo, hi)
+            print(f"  {key:14s} Uniform({lo:.6g}, {hi:.6g})   [mu={mu:.6g}, sigma={sig:.4g}]")
+
 if RUN["nautilus-source"]:
     METHOD = "nautilus-source"
 
     # Nested sampling reads cfg["nautilus"], NOT cfg["inference"]: num_chains / num_warmup /
     # num_samples / informed / regularize are NUTS controls and are ignored here.
     #
-    # Nautilus samples the *whole* prior box rather than expanding around the truth, so for
-    # the comparison below to mean anything its source-position prior has to be the same box
-    # the NUTS runs use -- otherwise the posteriors differ because the priors differ, not
-    # because the methods do. DEFAULT_PRIORS_GW_SOURCE_PLANE would give y0gw/y1gw in
-    # (-1, 1), far wider than the truth-centred +/-source_box_half_width box.
+    # Fallback source-position prior, matching the box the NUTS runs use. Without it
+    # nautilus falls back to DEFAULT_PRIORS_GW_SOURCE_PLANE's (-1, 1), far wider than the
+    # truth-centred +/-source_box_half_width box, and the posteriors would then differ
+    # because the priors differ rather than because the methods do.
+    #
+    # NOTE this is *overridden* for any key NAUTILUS_PRIORS_FROM_FISHER sets: cfg["priors"]
+    # wins outright in build_nautilus_prior and is not clipped to these bounds. So it only
+    # binds when that toggle is off, when fisher-source did not run, or for a key whose
+    # Fisher sigma was unusable.
     SRC = ctx_gw_source_gw["cfg"]["gw"]["source_pos"]
     HW = float(ctx_gw_source_gw["cfg"]["gw"]["source_box_half_width"])
     ctx_gw_source_gw["cfg"]["gw"]["source_plane_bounds"] = {
@@ -443,6 +485,9 @@ if RUN["nautilus-source"]:
                 # caught by prior_check, the others are NOT and would silently resume
                 # the old problem.
                 "filepath": os.path.join(gw_out, "nautilus_source.hdf5"),
+                # Priors change when NAUTILUS_PRIORS_FROM_FISHER is on, and a resume
+                # under different priors silently rescales the stored unit-cube points.
+                # prior_check would catch it and raise; starting fresh is the intent.
                 "resume": False,
                 "prior_check": True,
                 "verbose": True,
@@ -513,6 +558,36 @@ truths_dict_nested = {
 }
 all_keys = sorted(shared)
 
+# --- Axis limits ------------------------------------------------------------
+# Nautilus explores the whole prior box, so its tails can be far wider than the
+# Fisher ellipse; autoscaling then squashes every posterior into a few pixels at
+# the centre. Anchoring the axes on fisher-source zooms in on the region that
+# matters. Set to False for autoscale (useful when you WANT to see how far the
+# nautilus tails actually run, or when fisher-source did not run).
+ZOOM_TO_FISHER = True
+FISHER_ZOOM_NSIGMA = 4.0      # half-width in fisher-source sigmas
+FISHER_ZOOM_REFERENCE = "fisher-source"
+
+param_ranges = None
+if ZOOM_TO_FISHER:
+    ref = next((s for m, s, _ in RESULTS if m == FISHER_ZOOM_REFERENCE), None)
+    if ref is None:
+        print(f"ZOOM_TO_FISHER on but {FISHER_ZOOM_REFERENCE!r} did not run; autoscaling.")
+    else:
+        param_ranges = {}
+        for k in all_keys:
+            v = np.asarray(ref[k], dtype=float)
+            mu, sd = float(np.mean(v)), float(np.std(v))
+            if not np.isfinite(sd) or sd <= 0:
+                continue          # degenerate direction: let corner autoscale it
+            lo, hi = mu - FISHER_ZOOM_NSIGMA * sd, mu + FISHER_ZOOM_NSIGMA * sd
+            t = flat_truths.get(k)
+            if t is not None and np.isfinite(t):
+                lo, hi = min(lo, t), max(hi, t)   # never crop the truth marker out
+            param_ranges[k] = (lo, hi)
+        print(f"axis limits from {FISHER_ZOOM_REFERENCE} "
+              f"(+/-{FISHER_ZOOM_NSIGMA} sigma) for {len(param_ranges)}/{len(all_keys)} params")
+
 # A comparison corner needs at least two sample sets to compare.
 if len(RESULTS) >= 2:
     plot_multi_comparison_corner(
@@ -521,6 +596,7 @@ if len(RESULTS) >= 2:
         labels=labels,
         colors=colors,
         truths_dict=truths_dict_nested,
+        param_ranges=param_ranges,
         save_path=os.path.join(gw_out, "comparison_{group_name}.png"),
         hist_kwargs={"density": True},
     )
@@ -530,6 +606,7 @@ if len(RESULTS) >= 2:
         labels=labels,
         colors=colors,
         truths_dict={"all": {k: flat_truths[k] for k in all_keys if k in flat_truths}},
+        param_ranges=param_ranges,
         save_path=os.path.join(gw_out, f"comparison_all_{MODE}.png"),
         hist_kwargs={"density": True},
     )
