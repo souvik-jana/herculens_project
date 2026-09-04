@@ -87,7 +87,7 @@ cfg["gw"]["solver_params"] = {
 
 ## 2. Diagnostics — `cfg["inference"]["diagnostics"]`
 
-Five checks at the **truth** point, before sampling. The truth is the only place a solver failure can be told apart from real physics: during sampling, "solver missed an image" and "source moved outside the caustic" both look like a wrong image count.
+Six checks at the **truth** point, before sampling. The truth is the only place a solver failure can be told apart from real physics: during sampling, "solver missed an image" and "source moved outside the caustic" both look like a wrong image count.
 
 | value | behaviour |
 |---|---|
@@ -100,10 +100,13 @@ Five checks at the **truth** point, before sampling. The truth is the only place
 | 1 | images | `n_found > nsolutions`; `n_distinct != n_images`; position error `> position_tol` | yes |
 | 2 | observables | array-length mismatch; time-delay or dL_eff rel error `> observable_rtol` | yes |
 | 3 | source box | caustic margin `<` `source_box_half_width` | **no — advisory only** |
-| 4 | parameters | eigenvalue positive above noise floor; `n_free > n_obs`; `cond > condition_limit` | yes |
-| 5 | gradient | any `\|g0/√\|H_ii\|\| > gradient_sigma`; non-finite gradient | yes |
+| 4 | parameters | `n_free > n_obs` — **GW-only only**; `EM+GW` / `EM-only` print the tally marked `NA` | GW-only only |
+| 5 | fisher cond | eigenvalue positive above noise floor (truth is a saddle); `cond > condition_limit` | yes |
+| 6 | gradient | any `\|g0/√\|H_ii\|\| > gradient_sigma`; non-finite gradient | yes |
 
-Checks 1–3 need a solver (skipped for image-plane methods and `EM-only`); 4–5 need a Fisher expansion (skipped for the two nautilus methods).
+Checks 1–3 need a solver (skipped for image-plane methods and `EM-only`); 4–6 need a Fisher expansion (skipped for the two nautilus methods).
+
+Check 4 counts, check 5 measures. With EM data the image pixels constrain the model too and never enter `n_obs`, so counting 16 free parameters against a quad's 7 GW observables would fail every `EM+GW` run — hence `NA` there, with the verdict left to check 5.
 
 ### Thresholds — `cfg["inference"]["diagnostics_thresholds"]`
 
@@ -113,8 +116,8 @@ Give **only what you want to change**; omitted keys keep the default. A misspell
 |---|---|---|---|
 | `position_tol` | `1e-4` arcsec | 1 | solved vs simulated image positions |
 | `observable_rtol` | `1e-3` | 2 | time delays, dL_eff |
-| `condition_limit` | `1e10` | 4 | scaled Fisher condition number |
-| `gradient_sigma` | `0.5` | 5 | how many σ the truth sits from the peak |
+| `condition_limit` | `1e10` | 5 | scaled Fisher condition number |
+| `gradient_sigma` | `0.5` | 6 | how many σ the truth sits from the peak |
 
 There is no per-check on/off switch. To disarm one, raise its threshold rather than setting `diagnostics: "off"`, which disables the checks still doing useful work.
 
@@ -298,10 +301,11 @@ Names depend on `use_parameter_layout`: `lens0_theta_E`, `lens0_e2`, `source0_n_
 |---|---|---|
 | a setting appears to have no effect | wrong nest, or a method that does not read it | check §1's "which methods read this"; flat keys warn on migration |
 | `[diag] images ... n_distinct != n_images` | solver missed/duplicated an image | raise `helens.nsubdivisions` or `jaxtronomy.Nmeas`; or switch `backend` |
-| `[diag] parameters ... FAIL`, huge widths | more free parameters than observables | fix one via `cfg["priors"]`, or add EM data (§3) |
+| `[diag] fisher cond ... FAIL`, huge widths | degenerate Fisher: some directions unconstrained | fix a parameter via `cfg["priors"]`, or add EM data (§3) |
+| `[diag] parameters ... FAIL` (GW-only) | more free parameters than GW observables | fix one via `cfg["priors"]`. EM+GW / EM-only print `NA` here: the pixels constrain the model and never enter the count |
 | `[diag] gradient` large | truth is not the likelihood peak | usually truth/model disagreement; check `[diag] images` first |
 | NUTS divergences | source box outside the caustic | lower `source_box_half_width` to the margin check 3 prints |
-| NaN samples from `fisher*` | non-PSD covariance | now whitened + clipped with a warning; check `[diag] parameters` |
+| NaN samples from `fisher*` | non-PSD covariance | now whitened + clipped with a warning; check `[diag] fisher cond` |
 | nautilus returns ~1 sample | `n_like_max` hit during exploration | raise it, delete the checkpoint |
 | nautilus ignores your settings | put in `cfg["inference"]` instead of `cfg["nautilus"]` | move them (§4) |
 | nautilus posterior differs from NUTS | different source prior box | set `source_plane_bounds` to match (§4) |

@@ -73,7 +73,7 @@ GW-only supplies `2*n_images - 1` numbers (`n_images - 1` time delays + `n_image
 | 4 quad | 7 | ~5 |
 | 5 quad+central | 9 | ~5+ |
 
-Free as many as there are observables and the Fisher goes degenerate: it still inverts, but widths come back many times the parameter values. Measured on catalog 555 (3-image): with 5 free, σ/truth was 13.7–32.4; fixing one parameter gave 0.23–1.14. Count the budget from the priors dict — `y0gw`/`y1gw` are always sampled, `T_star`/`dL` unless pinned — not from the image count alone. Diagnostic check 4 reports it before sampling.
+Free as many as there are observables and the Fisher goes degenerate: it still inverts, but widths come back many times the parameter values. Measured on catalog 555 (3-image): with 5 free, σ/truth was 13.7–32.4; fixing one parameter gave 0.23–1.14. Count the budget from the priors dict — `y0gw`/`y1gw` are always sampled, `T_star`/`dL` unless pinned — not from the image count alone. Diagnostic check 4 reports the count (GW-only only) and check 5 the Fisher conditioning, both before sampling.
 
 ## Question 2.5 — Parameter layout (ask if unclear, `GW-only`/`EM+GW`, any method)
 
@@ -373,15 +373,16 @@ run_inference(ctx, mode="GW-only", method="nautilus-source",
 
 `n_newton` (default 8) is a **step count, not a switch**, and `0` raises — zero steps means every derivative comes back exactly `0.0` with no error and a NaN covariance. The only on/off switch is `cfg["nautilus"]["polish"]`, and only `nautilus-source` reads it.
 
-**Diagnostics — `cfg["inference"]["diagnostics"]`:** `"warn"` (default, prints and continues), `"raise"` (aborts before sampling), `"off"`. Five checks at truth:
+**Diagnostics — `cfg["inference"]["diagnostics"]`:** `"warn"` (default, prints and continues), `"raise"` (aborts before sampling), `"off"`. Six checks at truth:
 
 | # | check | fails when |
 |---|---|---|
 | 1 | images | solver misses/duplicates an image, or positions differ from the simulation |
 | 2 | observables | time delays / dL_eff do not reproduce the simulation |
 | 3 | source box | prior box reaches past the caustic — **advisory only, never aborts** |
-| 4 | parameters | more free parameters than observables, or `cond > 1e10` |
-| 5 | gradient | truth is not the likelihood peak (`\|g0/√\|H_ii\|\| > 0.5`) |
+| 4 | parameters | more free parameters than GW observables — **GW-only only**; `EM+GW` / `EM-only` print the tally marked `NA` |
+| 5 | fisher cond | `cond > 1e10`, or a Hessian eigenvalue positive above the noise floor (truth is a saddle) |
+| 6 | gradient | truth is not the likelihood peak (`\|g0/√\|H_ii\|\| > 0.5`) |
 
 Thresholds are per-key overridable via `cfg["inference"]["diagnostics_thresholds"]`; give only what you change. Prefer raising one threshold over `diagnostics: "off"`, which disables the checks still working.
 

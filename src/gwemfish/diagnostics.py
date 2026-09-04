@@ -1,7 +1,7 @@
 """
 Pre-inference diagnostics.
 
-Five checks run at the *true* parameters, before any sampling starts. The truth
+Six checks run at the *true* parameters, before any sampling starts. The truth
 point is the one place where the right answer is known independently, which makes
 it the only place a solver failure can be distinguished from real physics: during
 sampling, "the solver missed an image" and "the source moved outside the caustic"
@@ -16,14 +16,17 @@ both look like a wrong image count, and both simply reject.
                   penalty is a cliff with no gradient to push back against.
   4. parameters   are there enough observables to constrain the free parameters?
                   A quad gives 7 (3 time delays + 4 dL_eff); a 3-image system gives
-                  only 5 and a double only 3. Free as many parameters as there are
-                  observables and the Fisher is degenerate -- it still inverts, but
-                  the widths come back larger than the parameters themselves.
-  5. gradient     is the log-density gradient at truth ~0, i.e. is the truth actually
+                  only 5 and a double only 3. Counting is a verdict for GW-only only:
+                  with EM data the pixels constrain the model too, and they never
+                  enter the count, so EM+GW and EM-only print the tally marked NA.
+  5. fisher cond  is the scaled Fisher well conditioned, and is the truth a maximum
+                  rather than a saddle? This is the measurement check 4 approximates,
+                  and it is judged in every mode.
+  6. gradient     is the log-density gradient at truth ~0, i.e. is the truth actually
                   at the peak the Fisher expansion assumes it is?
 
 Checks 1-3 need a solver, so they are skipped for image-plane methods (which sample
-image positions directly) and for EM-only. Checks 4-5 need a Fisher expansion, so
+image positions directly) and for EM-only. Checks 4-6 need a Fisher expansion, so
 they are skipped for the nautilus methods, which never build one.
 """
 
@@ -214,7 +217,7 @@ def caustic_margin(solver, kwargs_lens, source_pos, n_steps=24, max_radius=1.0):
 
 
 def check_gradient(g0, H0, keys, threshold=0.5):
-    """Check 4: is the log-density gradient at truth consistent with zero?
+    """Check 6: is the log-density gradient at truth consistent with zero?
 
     The raw gradient cannot be thresholded because the parameter vector is unscaled
     -- y1gw is ~1e-6 while theta_E is ~2, so their gradients differ by orders of
@@ -256,7 +259,7 @@ def check_gradient(g0, H0, keys, threshold=0.5):
     return report
 
 
-# Default thresholds for the five checks. Override any subset via
+# Default thresholds for the six checks. Override any subset via
 # cfg["inference"]["diagnostics_thresholds"]; anything you leave out keeps the value
 # here. They are starting points measured on real systems, not universal truths --
 # raise them when a system you trust trips a check for a reason you understand.
@@ -268,7 +271,7 @@ DEFAULT_THRESHOLDS = {
     # Check 2: relative tolerance on time delays and dL_eff recomputed from the
     # solved positions.
     "observable_rtol": 1e-3,
-    # Check 4: condition number above which the Fisher's weak directions stop being
+    # Check 5: condition number above which the Fisher's weak directions stop being
     # meaningful. Calibrated against measured runs rather than picked: a double with
     # 3 free parameters gives 4e1, a quad with 5 gives 2.5e4, and catalog system 555
     # with 4 free gives 5.2e8 while still returning usable widths (sigma/truth
@@ -276,7 +279,7 @@ DEFAULT_THRESHOLDS = {
     # 9.0e12 and the widths blow up to 14-32x the parameter values. 1e10 sits in
     # that gap.
     "condition_limit": 1e10,
-    # Check 5: |g0| / sqrt(|diag H0|), i.e. how many 1-sigma steps the truth sits
+    # Check 6: |g0| / sqrt(|diag H0|), i.e. how many 1-sigma steps the truth sits
     # from the peak. A correct setup lands at ~1e-12; 0.5 flags a genuinely
     # off-centre expansion rather than round-off.
     "gradient_sigma": 0.5,
@@ -296,8 +299,8 @@ def resolve_thresholds(overrides=None):
     return merged
 
 
-def check_conditioning(H0, keys, u0, n_images, mode, condition_limit=None):
-    """Check 5: can this observation actually constrain this many free parameters?
+def check_parameter_count(keys, n_images, mode):
+    """Check 4: are there enough observables to constrain the free parameters?
 
     A GW-only lens gives ``n_images - 1`` time delays plus ``n_images`` effective
     distances -- ``2*n_images - 1`` numbers in total. A quad therefore supplies 7,
@@ -307,6 +310,40 @@ def check_conditioning(H0, keys, u0, n_images, mode, condition_limit=None):
     1-sigma widths come back many times larger than the parameters themselves, which
     is easy to mistake for a solver bug.
 
+    The count is a verdict only for GW-only. With EM data the image pixels constrain
+    the lens and source light directly -- thousands of numbers that never enter
+    ``n_obs`` -- so judging 16 free parameters against 7 GW observables would fail
+    every EM+GW run for no reason. Those modes still print the tally, marked NA, and
+    leave the verdict to check 5, which measures what the data actually constrain
+    instead of counting.
+    """
+    n_free = len(keys)
+    n_obs = 2 * int(n_images) - 1 if mode != "EM-only" else None
+    applies = mode == "GW-only"
+
+    report = {
+        "ok": True,
+        "messages": [],
+        "n_free": n_free,
+        "n_gw_observables": n_obs,
+        "mode": mode,
+        "applies": applies,
+    }
+
+    if applies and n_free > n_obs:
+        report["ok"] = False
+        report["messages"].append(
+            f"{n_free} free parameters against {n_obs} GW observables "
+            f"({n_images} images -> {n_images - 1} time delays + {n_images} dL_eff): "
+            "fewer observables than parameters, so some directions are unconstrained "
+            "by construction. Fix a parameter via cfg['priors'] or add EM data."
+        )
+    return report
+
+
+def check_conditioning(H0, keys, condition_limit=None):
+    """Check 5: does the Fisher expansion actually constrain every direction?
+
     The condition number is measured after scaling each parameter by its own
     1-sigma, ``1/sqrt(|H_ii|)``. The raw condition number is dominated by unit
     disparity (dL ~ 3e4 Mpc next to e2 ~ 0.6) and says nothing about whether the data
@@ -314,11 +351,16 @@ def check_conditioning(H0, keys, u0, n_images, mode, condition_limit=None):
     a truth value near zero (y1gw is 1e-6) blows the number up for no physical
     reason. What is left after this scaling is the correlation structure -- i.e.
     genuine degeneracy between parameters.
+
+    This runs in every mode. It is the measurement the parameter count (check 4) only
+    approximates: an exactly-determined problem can be perfectly well conditioned -- a
+    double with 3 free parameters against 3 observables comes out at cond ~4e2 -- and
+    an EM+GW run with more free parameters than GW observables is routinely fine
+    because the pixels carry the rest.
     """
     H0 = np.asarray(H0, dtype=float)
-    u0 = np.asarray(u0, dtype=float)
     n_free = len(keys)
-    n_obs = 2 * int(n_images) - 1 if mode != "EM-only" else None
+    limit = condition_limit or DEFAULT_THRESHOLDS["condition_limit"]
 
     diag = np.abs(np.diag(H0))
     scale = np.where(diag > 0, 1.0 / np.sqrt(np.where(diag > 0, diag, 1.0)), 1.0)
@@ -339,8 +381,12 @@ def check_conditioning(H0, keys, u0, n_images, mode, condition_limit=None):
         "ok": True,
         "messages": [],
         "n_free": n_free,
-        "n_gw_observables": n_obs,
         "condition_number": cond,
+        "condition_limit": float(limit),
+        # Signed, so the sign tells you what the count below tells you: H0 is the
+        # Hessian of the log-density, so at a maximum every eigenvalue is negative.
+        "eig_min": float(eig.min()) if eig.size else float("nan"),
+        "eig_max": float(eig.max()) if eig.size else float("nan"),
         "positive_eigenvalues": genuinely_positive,
         "near_zero_eigenvalues": int(np.sum(np.abs(eig) <= noise_floor)),
     }
@@ -353,29 +399,13 @@ def check_conditioning(H0, keys, u0, n_images, mode, condition_limit=None):
             "expansion point is wrong rather than merely poorly constrained."
         )
 
-    budget = (f"{n_free} free parameters against {n_obs} GW observables "
-              f"({n_images} images -> {n_images - 1} time delays + "
-              f"{n_images} dL_eff)") if n_obs is not None else f"{n_free} free parameters"
-
-    # Counting alone does not decide this. An exactly-determined problem can be
-    # perfectly well conditioned -- a double with 3 free parameters against 3
-    # observables comes out at cond ~4e2 -- so the condition number is the arbiter
-    # and the count is the explanation for why it went bad.
-    if n_obs is not None and n_free > n_obs:
+    if cond > limit:
         report["ok"] = False
         report["messages"].append(
-            f"{budget}: fewer observables than parameters, so some directions are "
-            "unconstrained by construction. Fix a parameter via cfg['priors'] or add "
-            "EM data."
-        )
-    elif cond > (condition_limit or DEFAULT_THRESHOLDS['condition_limit']):
-        report["ok"] = False
-        report["messages"].append(
-            f"scaled Fisher condition number {cond:.1e} (limit "
-            f"{condition_limit or DEFAULT_THRESHOLDS['condition_limit']:.1e}) -- "
-            "some directions are barely "
-            "constrained, so their widths are close to meaningless even though the "
-            f"matrix inverts. {budget}; freeing one fewer parameter usually fixes it."
+            f"scaled Fisher condition number {cond:.1e} (limit {limit:.1e}) -- some "
+            "directions are barely constrained, so their widths are close to "
+            f"meaningless even though the matrix inverts. {n_free} free parameters; "
+            "freeing one fewer usually fixes it."
         )
     return report
 
@@ -430,14 +460,27 @@ def format_report(report):
             f"[diag] source box : half-width {box['half_width']:.4g} vs caustic margin "
             f"{margin_txt}   {status}"
         )
+    par = report.get("parameters")
+    if par is not None:
+        # NA, not OK: outside GW-only the count is reported but not judged.
+        status = ("OK" if par["ok"] else "FAIL") if par["applies"] else "NA"
+        n_obs = par["n_gw_observables"]
+        if n_obs is None:
+            obs_txt = "EM only"
+        elif par["mode"] == "EM+GW":
+            obs_txt = f"{n_obs} GW observables + EM"
+        else:
+            obs_txt = f"{n_obs} GW observables"
+        lines.append(
+            f"[diag] parameters : {par['n_free']} free vs {obs_txt}   {status}"
+        )
     cond = report.get("conditioning")
     if cond is not None:
         status = "OK" if cond["ok"] else "FAIL"
-        obs = cond["n_gw_observables"]
-        obs_txt = f"{obs} GW observables" if obs is not None else "EM only"
         lines.append(
-            f"[diag] parameters : {cond['n_free']} free vs {obs_txt}, "
-            f"cond={cond['condition_number']:.1e}   {status}"
+            f"[diag] fisher cond: {cond['condition_number']:.1e} "
+            f"(limit {cond['condition_limit']:.1e}), eig "
+            f"[{cond['eig_min']:.2e}, {cond['eig_max']:.2e}]   {status}"
         )
     grad = report.get("gradient")
     if grad is not None:
@@ -446,7 +489,8 @@ def format_report(report):
             f"[diag] gradient   : max |g0|/sqrt|diag H0| = "
             f"{grad['max_abs_scaled']:.3g} (thresh {grad['threshold']})   {status}"
         )
-    for section in ("images", "observables", "source_box", "conditioning", "gradient"):
+    for section in ("images", "observables", "source_box", "parameters",
+                    "conditioning", "gradient"):
         entry = report.get(section)
         if entry:
             for msg in entry.get("messages", []):
@@ -519,14 +563,16 @@ def diagnose_system(ctx, cfg_full, method, mode, solver=None, solver_params=None
         report["gradient"] = grad
         report["ok"] &= grad["ok"]
 
-        u0 = (ctx.get("likelihood") or {}).get("u0")
         n_img = len([k for k in truth_params
                      if k.startswith("image_x") and k[7:].isdigit()])
-        if u0 is not None and n_img:
-            cond = check_conditioning(H0, keys, u0, n_img, mode,
-                                      condition_limit=thr["condition_limit"])
-            report["conditioning"] = cond
-            report["ok"] &= cond["ok"]
+        if n_img:
+            par = check_parameter_count(keys, n_img, mode)
+            report["parameters"] = par
+            report["ok"] &= par["ok"]
+
+        cond = check_conditioning(H0, keys, condition_limit=thr["condition_limit"])
+        report["conditioning"] = cond
+        report["ok"] &= cond["ok"]
     else:
         report["gradient_skipped"] = "no Fisher expansion for this method"
 

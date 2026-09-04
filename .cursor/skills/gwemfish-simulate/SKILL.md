@@ -45,7 +45,7 @@ GW-only supplies `2*n_images - 1` observables, which caps how many parameters in
 | 4 quad | 7 | ~5 |
 | 5 quad+central (γ<2) | 9 | ~5+ |
 
-Verified end to end at all four. Free more than the data supports and the Fisher goes degenerate — widths come back many times the parameter values. Diagnostic check 4 reports this before sampling.
+Verified end to end at all four. Free more than the data supports and the Fisher goes degenerate — widths come back many times the parameter values. Diagnostic checks 4 and 5 report this before sampling.
 
 ## Custom PSF
 

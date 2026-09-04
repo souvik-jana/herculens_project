@@ -218,7 +218,7 @@ for k in sorted(shared):
     print(f"{k:>14s} {flat_truths.get(k, float('nan')):13.5g}{row}")
 ```
 
-If widths come back many times the parameter values, the problem is usually a degenerate Fisher, not the plot — check the `[diag] parameters` line (see `gwemfish-cfg`).
+If widths come back many times the parameter values, the problem is usually a degenerate Fisher, not the plot — check the `[diag] fisher cond` line (see `gwemfish-cfg`).
 
 ## Related
 

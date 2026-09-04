@@ -440,9 +440,14 @@ COMPLETE_CFG = {
         #   3 source box   y0gw/y1gw prior box fits inside the caustic (advisory: a box that pokes
         #                  out guarantees NUTS divergences, since the image-count penalty is a
         #                  cliff with no gradient to push back against)
-        #   4 gradient     g0/sqrt|diag H0| ~ 0, i.e. truth really is at the peak
+        #   4 parameters   enough observables for the free parameters? Judged for GW-only only:
+        #                  EM+GW / EM-only print the tally marked NA, because the EM pixels
+        #                  constrain the model too and never enter the observable count
+        #   5 fisher cond  scaled Fisher condition number + eigenvalue range; judged in every
+        #                  mode, and the real arbiter of whether the widths mean anything
+        #   6 gradient     g0/sqrt|diag H0| ~ 0, i.e. truth really is at the peak
         # Checks 1-3 need a solver, so they are skipped for image-plane methods and EM-only;
-        # check 4 needs a Fisher expansion, so it is skipped for the nautilus methods.
+        # checks 4-6 need a Fisher expansion, so they are skipped for the nautilus methods.
         # Per-check thresholds. Override any subset; omitted keys keep the default.
         # Defaults live in gwemfish.diagnostics.DEFAULT_THRESHOLDS and were calibrated
         # on real systems rather than chosen: e.g. condition_limit 1e10 sits between a
@@ -453,8 +458,8 @@ COMPLETE_CFG = {
         "diagnostics_thresholds": {
             # "position_tol": 1e-4,     # arcsec, check 1: solved vs simulated images
             # "observable_rtol": 1e-3,  # check 2: time delays / dL_eff
-            # "condition_limit": 1e10,  # check 4: scaled Fisher condition number
-            # "gradient_sigma": 0.5,    # check 5: |g0|/sqrt|diag H0|
+            # "condition_limit": 1e10,  # check 5: scaled Fisher condition number
+            # "gradient_sigma": 0.5,    # check 6: |g0|/sqrt|diag H0|
         },
         "diagnostics": "warn",  # "warn" (default) | "raise" | "off".
                                 # "off" is unsafe for the '-source' family: their expansion is
